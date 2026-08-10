@@ -1,0 +1,40 @@
+{
+  "tenants": [
+    {
+      "tenant_id": "legacy-clothing",
+      "pipeline": "clothing",
+      "analysis_provider": null,
+      "generation_provider": null,
+      "analysis_model": null,
+      "generation_model": null,
+      "prompt_profile": "default",
+      "api_key_sha256": null,
+      "enabled": true,
+      "feature_flags": {}
+    },
+    {
+      "tenant_id": "fashion_company",
+      "pipeline": "clothing",
+      "analysis_provider": "mock",
+      "generation_provider": "gapgpt",
+      "analysis_model": null,
+      "generation_model": "gpt-image-2",
+      "prompt_profile": "default",
+      "api_key_sha256": null,
+      "enabled": true,
+      "feature_flags": {}
+    },
+    {
+      "tenant_id": "wallpaper_company",
+      "pipeline": "wallpaper",
+      "analysis_provider": "mock",
+      "generation_provider": "gapgpt",
+      "analysis_model": null,
+      "generation_model": "gemini-3-pro-image-preview",
+      "prompt_profile": "default",
+      "api_key_sha256": null,
+      "enabled": true,
+      "feature_flags": {}
+    }
+  ]
+}

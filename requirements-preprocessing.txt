@@ -1,0 +1,15 @@
+# Install after the core requirements:
+#   python -m pip install -r requirements-preprocessing.txt
+-r requirements.txt
+
+# Windows x86-64 / CPython 3.11-compatible MediaPipe Pose.
+mediapipe==0.10.21
+
+# CPU ONNX inference. No CUDA package is required.
+onnxruntime>=1.20,<2
+
+# Background removal library; models download into MODEL_CACHE_DIRECTORY.
+rembg[cpu]>=2.0.67,<2.1
+
+# WallpaperPipeline uses the ONNX Runtime declared above. Torch/Transformers
+# remain an optional fallback when WALLPAPER_SEGMENTATION_RUNTIME=torch.

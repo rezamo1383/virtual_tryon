@@ -524,6 +524,84 @@ python cli.py run --request-json request.json
 }
 ```
 
+## Docker
+
+پروژه با دو image اجرا می‌شود: image بک‌اند شامل FastAPI و CLI است و image
+فرانت‌اند فقط Streamlit را اجرا می‌کند. از ریشهٔ پروژه اجرا کنید:
+
+```bash
+docker compose up --build -d
+```
+
+پس از healthy شدن سرویس‌ها:
+
+- Frontend: `http://localhost:8501`
+- Backend API: `http://localhost:8000`
+- API docs: `http://localhost:8000/docs`
+
+مشاهدهٔ وضعیت و logها:
+
+```bash
+docker compose ps
+docker compose logs -f backend frontend
+docker compose down
+```
+
+به‌صورت پیش‌فرض providerهای mock فعال‌اند. Docker Compose متغیرهای provider را
+از فایل `.env` ریشه برای جای‌گذاری می‌خواند؛ بنابراین کلیدها داخل image ذخیره
+نمی‌شوند. برای provider واقعی، متغیرهایی مثل `ANALYSIS_PROVIDER`،
+`TRYON_PROVIDER`، `GAPGPT_API_KEY` یا `OPENROUTER_API_KEY` را در `.env` تنظیم
+کنید. فایل `config/tenants.json` نیز read-only داخل کانتینر mount می‌شود.
+
+دایرکتوری‌های زیر bind mount هستند و با حذف کانتینر باقی می‌مانند:
+
+```text
+inputs/   outputs/   models/   logs/   temp/   config/
+```
+
+اولین اجرای preprocessing ممکن است مدل‌ها را دانلود کند و آن‌ها را در `models/`
+نگه دارد. image پیش‌فرض وابستگی‌های CPU preprocessing را نصب می‌کند. برای image
+سبک‌تر، این دو مقدار را در `.env` قرار دهید و دوباره build کنید:
+
+```dotenv
+INSTALL_PREPROCESSING=false
+LOCAL_PREPROCESSING_ENABLED=false
+```
+
+### اجرای CLI با Docker
+
+CLI داخل همان image بک‌اند قرار دارد و نیازی به سرویس جدا ندارد. یک شخص و چند
+لباس/اکسسوری را می‌توان با فرمان یک‌باره اجرا کرد:
+
+```bash
+docker compose run --rm backend python cli.py clothing \
+  --person inputs/persons/person.jpg \
+  --garment inputs/garments/tshirt.png --garment-type "T-shirt" \
+  --garment inputs/garments/pants.png --garment-type "Pants" \
+  --garment inputs/garments/watch.png --garment-type "Watch" \
+  --candidates-per-color 2 \
+  --max-retries 1
+```
+
+خروجی‌های CLI مستقیماً در `outputs/` میزبان نوشته می‌شوند. سایر فرمان‌ها نیز به
+همین شکل قابل اجرا هستند:
+
+```bash
+docker compose run --rm backend python cli.py config-check
+docker compose run --rm backend python cli.py validate \
+  --person inputs/persons/person.jpg \
+  --garment inputs/garments/tshirt.png
+```
+
+در Linux سرویس backend به‌صورت پیش‌فرض با UID/GID برابر `1000:1000` اجرا می‌شود
+تا bind mountها قابل نوشتن باشند. اگر شناسهٔ کاربر میزبان متفاوت است، مقادیر زیر
+را در `.env` تنظیم کنید. روی Docker Desktop ویندوز معمولاً این کار لازم نیست.
+
+```dotenv
+HOST_UID=1000
+HOST_GID=1000
+```
+
 ## FastAPI
 
 ```bash

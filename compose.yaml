@@ -1,0 +1,88 @@
+name: virtual-tryon
+
+services:
+  backend:
+    image: virtual-tryon-backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_PREPROCESSING: "${INSTALL_PREPROCESSING:-true}"
+    init: true
+    restart: unless-stopped
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      HOME: /tmp
+      APP_ENV: "${APP_ENV:-production}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      DEFAULT_TENANT_ID: "${DEFAULT_TENANT_ID:-legacy-clothing}"
+      TENANT_AUTH_REQUIRED: "${TENANT_AUTH_REQUIRED:-false}"
+      TENANT_CONFIG_PATH: /app/config/tenants.json
+      ANALYSIS_PROVIDER: "${ANALYSIS_PROVIDER:-mock}"
+      TRYON_PROVIDER: "${TRYON_PROVIDER:-mock}"
+      USE_MOCK_QWEN: "${USE_MOCK_QWEN:-true}"
+      USE_MOCK_TRYON: "${USE_MOCK_TRYON:-true}"
+      QWEN_API_BASE_URL: "${QWEN_API_BASE_URL:-}"
+      QWEN_API_KEY: "${QWEN_API_KEY:-}"
+      QWEN_MODEL: "${QWEN_MODEL:-}"
+      OPENROUTER_API_BASE_URL: "${OPENROUTER_API_BASE_URL:-https://openrouter.ai/api/v1}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_VISION_MODEL: "${OPENROUTER_VISION_MODEL:-}"
+      OPENROUTER_IMAGE_MODEL: "${OPENROUTER_IMAGE_MODEL:-}"
+      GAPGPT_API_BASE_URL: "${GAPGPT_API_BASE_URL:-https://api.gapgpt.app/v1}"
+      GAPGPT_API_KEY: "${GAPGPT_API_KEY:-}"
+      GAPGPT_VISION_MODEL: "${GAPGPT_VISION_MODEL:-gpt-4o}"
+      GAPGPT_IMAGE_MODEL: "${GAPGPT_IMAGE_MODEL:-gpt-image-2}"
+      GAPGPT_IMAGE_EDIT_ENDPOINT: "${GAPGPT_IMAGE_EDIT_ENDPOINT:-/images/edits}"
+      GAPGPT_IMAGE_FIELD_NAME: "${GAPGPT_IMAGE_FIELD_NAME:-image[]}"
+      TRYON_API_BASE_URL: "${TRYON_API_BASE_URL:-}"
+      TRYON_API_KEY: "${TRYON_API_KEY:-}"
+      TRYON_MODEL: "${TRYON_MODEL:-}"
+      LOCAL_PREPROCESSING_ENABLED: "${LOCAL_PREPROCESSING_ENABLED:-true}"
+      PREPROCESSING_DEVICE: "${PREPROCESSING_DEVICE:-cpu}"
+      WALLPAPER_SEGMENTATION_DEVICE: "${WALLPAPER_SEGMENTATION_DEVICE:-cpu}"
+      MODEL_CACHE_DIRECTORY: /app/models
+      OUTPUT_DIRECTORY: /app/outputs
+      TEMP_DIRECTORY: /app/temp
+      LOG_DIRECTORY: /app/logs
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./inputs:/app/inputs:ro
+      - ./outputs:/app/outputs
+      - ./temp:/app/temp
+      - ./logs:/app/logs
+      - ./models:/app/models
+    networks:
+      - app-network
+    stop_grace_period: 20s
+
+  frontend:
+    image: virtual-tryon-frontend:local
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    init: true
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://backend:8000
+      CLOTHING_API_KEY: "${CLOTHING_API_KEY:-}"
+      WALLPAPER_API_KEY: "${WALLPAPER_API_KEY:-}"
+      COMPANY_NAME: "${COMPANY_NAME:-Vision Studio}"
+      API_TIMEOUT_SECONDS: "${API_TIMEOUT_SECONDS:-600}"
+      MAX_HISTORY_ITEMS: "${MAX_HISTORY_ITEMS:-12}"
+    ports:
+      - "${FRONTEND_PORT:-8501}:8501"
+    volumes:
+      - ./inputs:/app/inputs:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app-network
+    stop_grace_period: 20s
+
+networks:
+  app-network:
+    driver: bridge

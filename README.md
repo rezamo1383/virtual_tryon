@@ -442,6 +442,23 @@ python cli.py clothing `
   --product-title "Men's hoodie"
 ```
 
+برای ساخت یک استایل از چند تصویر، `--garment` و `--garment-type` را به همان ترتیب
+تکرار کنید. هر مرحله خروجی مرحلهٔ قبل را به‌عنوان تصویر شخص دریافت می‌کند:
+
+```bash
+python cli.py clothing \
+  --person inputs/persons/person.jpg \
+  --garment inputs/garments/tshirt.png --garment-type "T-shirt" \
+  --garment inputs/garments/pants.png --garment-type "Pants" \
+  --garment inputs/accessories/watch.png --garment-type "Watch" \
+  --candidates-per-color 2 \
+  --max-retries 1
+```
+
+حداکثر ۸ تصویر قابل ارسال است. مراحل میانی با یک candidate و بدون retry اجرا
+می‌شوند و تعداد candidate و retry درخواستی به مرحلهٔ آخر اختصاص می‌یابد. حالت
+چندلباسی رنگ اصلی هر آیتم را حفظ می‌کند.
+
 دستور قدیمی کاملاً سازگار باقی مانده و همان ClothingPipeline را اجرا می‌کند:
 
 ```bash

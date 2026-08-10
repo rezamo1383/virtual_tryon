@@ -14,6 +14,7 @@ from app.core.exceptions import AIPlatformError
 from app.core.logging_config import configure_logging
 from app.core.runtime import build_runtime
 from app.models.request_models import (
+    ClothingOptions,
     GenerationRequest,
     TryOnRequest,
     WallpaperOptions,
@@ -22,6 +23,11 @@ from app.models.result_models import TryOnJobResult
 from app.models.wallpaper_models import WallpaperJobResult
 from app.preprocessing.image_preprocessor import LocalImagePreprocessor
 from app.services.input_validator import InputValidator
+from app.services.multi_garment_tryon import (
+    LabeledGarment,
+    MultiGarmentTryOnResult,
+    run_multi_garment_tryon,
+)
 from app.services.pipeline import build_pipeline
 
 app = typer.Typer(
@@ -99,6 +105,61 @@ def _request_from_options(
     )
 
 
+def labeled_garments_from_options(
+    garments: list[Path] | None,
+    garment_types: list[str] | None,
+    *,
+    product_title: str | None = None,
+) -> list[LabeledGarment]:
+    """Pair repeated garment paths with their selected item labels."""
+
+    paths = garments or []
+    if not paths:
+        raise typer.BadParameter("At least one --garment is required.")
+    if len(paths) > 8:
+        raise typer.BadParameter("A maximum of 8 --garment options is supported.")
+    labels = garment_types or []
+    if not labels and len(paths) == 1:
+        labels = [product_title or "garment"]
+    if len(labels) != len(paths):
+        raise typer.BadParameter(
+            "Repeat --garment-type exactly once for each --garment."
+        )
+    normalized = [" ".join(label.split()) for label in labels]
+    if any(not label for label in normalized):
+        raise typer.BadParameter("Garment types cannot be empty.")
+    if any(len(label) > 80 for label in normalized):
+        raise typer.BadParameter(
+            "Each --garment-type must be 80 characters or fewer."
+        )
+    return [
+        LabeledGarment(path, label)
+        for path, label in zip(paths, normalized, strict=True)
+    ]
+
+
+def _clothing_options(
+    *,
+    colors: list[str] | None,
+    candidates_per_color: int | None,
+    max_retries: int | None,
+    settings: Settings,
+) -> ClothingOptions:
+    return ClothingOptions(
+        colors=colors or ["original"],
+        candidates_per_color=(
+            candidates_per_color
+            if candidates_per_color is not None
+            else settings.candidates_per_color
+        ),
+        max_retries=(
+            max_retries
+            if max_retries is not None
+            else settings.max_generation_retries
+        ),
+    )
+
+
 async def _run_pipeline(
     request: TryOnRequest,
     settings: Settings,
@@ -122,6 +183,35 @@ async def _run_pipeline(
     if not isinstance(result, TryOnJobResult):
         raise RuntimeError("Clothing pipeline returned an invalid result.")
     _print_tryon_result(result, settings)
+
+
+async def _run_multi_pipeline(
+    *,
+    person: Path,
+    garments: list[LabeledGarment],
+    options: ClothingOptions,
+    settings: Settings,
+    tenant_id: str | None = None,
+) -> MultiGarmentTryOnResult:
+    runtime = build_runtime(settings)
+    try:
+        tenant = runtime.tenant_resolver.resolve_for_cli(
+            tenant_id=tenant_id,
+            pipeline="clothing",
+        )
+        multi_result = await run_multi_garment_tryon(
+            runtime=runtime,
+            tenant=tenant,
+            person_image=person,
+            garments=garments,
+            options=options,
+        )
+    finally:
+        await runtime.aclose()
+    _print_tryon_result(multi_result.result, settings)
+    typer.echo("Applied items: " + " -> ".join(multi_result.applied_items))
+    typer.echo("Stage jobs: " + ", ".join(multi_result.stage_job_ids))
+    return multi_result
 
 
 def _print_tryon_result(
@@ -184,8 +274,22 @@ async def _run_wallpaper(
 @app.command()
 def run(
     person: Path | None = typer.Option(None, "--person", exists=False),
-    garment: Path | None = typer.Option(None, "--garment", exists=False),
-    product_title: str | None = typer.Option(None, "--product-title"),
+    garment: list[Path] | None = typer.Option(
+        None,
+        "--garment",
+        exists=False,
+        help="Garment image; repeat for a multi-item look.",
+    ),
+    garment_type: list[str] | None = typer.Option(
+        None,
+        "--garment-type",
+        help="Item selected from each garment image; repeat in matching order.",
+    ),
+    product_title: str | None = typer.Option(
+        None,
+        "--product-title",
+        help="Backward-compatible label for a single garment.",
+    ),
     colors: list[str] | None = typer.Option(None, "--colors"),
     candidates_per_color: int | None = typer.Option(
         None, "--candidates-per-color", min=1, max=8
@@ -198,23 +302,46 @@ def run(
 
     settings = _settings()
     try:
-        request = _request_from_options(
-            person=person,
-            garment=garment,
-            product_title=product_title,
-            colors=colors,
-            candidates_per_color=candidates_per_color,
-            max_retries=max_retries,
-            request_json=request_json,
-            settings=settings,
-        )
-        asyncio.run(
-            _run_pipeline(
-                request,
-                settings,
-                tenant_id=tenant,
+        if request_json is not None:
+            request = _request_from_options(
+                person=person,
+                garment=garment[0] if garment else None,
+                product_title=product_title,
+                colors=colors,
+                candidates_per_color=candidates_per_color,
+                max_retries=max_retries,
+                request_json=request_json,
+                settings=settings,
             )
-        )
+            asyncio.run(
+                _run_pipeline(
+                    request,
+                    settings,
+                    tenant_id=tenant,
+                )
+            )
+        else:
+            if person is None:
+                raise typer.BadParameter("--person is required.")
+            labeled_garments = labeled_garments_from_options(
+                garment,
+                garment_type,
+                product_title=product_title,
+            )
+            asyncio.run(
+                _run_multi_pipeline(
+                    person=person,
+                    garments=labeled_garments,
+                    options=_clothing_options(
+                        colors=colors,
+                        candidates_per_color=candidates_per_color,
+                        max_retries=max_retries,
+                        settings=settings,
+                    ),
+                    settings=settings,
+                    tenant_id=tenant,
+                )
+            )
     except (AIPlatformError, ValidationError, OSError) as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -223,11 +350,20 @@ def run(
 @app.command()
 def clothing(
     person: Path = typer.Option(..., "--person"),
-    garment: Path = typer.Option(..., "--garment"),
+    garment: list[Path] | None = typer.Option(
+        None,
+        "--garment",
+        help="Garment image; repeat for a multi-item look.",
+    ),
+    garment_type: list[str] | None = typer.Option(
+        None,
+        "--garment-type",
+        help="Item selected from each garment image; repeat in matching order.",
+    ),
     product_title: str | None = typer.Option(
         None,
         "--product-title",
-        help="Product to transfer when the reference contains a model or outfit.",
+        help="Backward-compatible label for a single garment.",
     ),
     colors: list[str] | None = typer.Option(None, "--colors", hidden=True),
     candidates_per_color: int | None = typer.Option(
@@ -248,20 +384,22 @@ def clothing(
 
     settings = _settings()
     try:
-        request = _request_from_options(
-            person=person,
-            garment=garment,
+        labeled_garments = labeled_garments_from_options(
+            garment,
+            garment_type,
             product_title=product_title,
-            colors=colors,
-            candidates_per_color=candidates_per_color,
-            max_retries=max_retries,
-            request_json=None,
-            settings=settings,
         )
         asyncio.run(
-            _run_pipeline(
-                request,
-                settings,
+            _run_multi_pipeline(
+                person=person,
+                garments=labeled_garments,
+                options=_clothing_options(
+                    colors=colors,
+                    candidates_per_color=candidates_per_color,
+                    max_retries=max_retries,
+                    settings=settings,
+                ),
+                settings=settings,
                 tenant_id=tenant,
             )
         )

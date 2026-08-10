@@ -23,9 +23,12 @@ from app.core.exceptions import (
 from app.core.logging_config import configure_logging
 from app.core.runtime import PlatformRuntime, build_runtime
 from app.models.request_models import ClothingOptions, GenerationRequest
-from app.models.result_models import TryOnJobResult
 from app.preprocessing.preprocessing_exceptions import PreprocessingError
 from app.preprocessing.preprocessing_models import PreprocessingResult
+from app.services.multi_garment_tryon import (
+    LabeledGarment,
+    run_multi_garment_tryon,
+)
 from app.services.pipeline import VirtualTryOnPipeline, build_pipeline
 from app.tenant.models import TenantConfig
 from app.utils.file_utils import ensure_within, secure_temp_name
@@ -211,56 +214,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 for upload in uploads
             ]
-            source_path = person_path
-            stage_job_ids: list[str] = []
-            result: TryOnJobResult | None = None
-            for index, (garment_path, garment_type) in enumerate(
-                zip(garment_paths, labels, strict=True)
-            ):
-                final_stage = index == len(garment_paths) - 1
-                options = ClothingOptions(
-                    product_title=garment_type,
+            multi_result = await run_multi_garment_tryon(
+                runtime=runtime,
+                tenant=tenant,
+                person_image=person_path,
+                garments=[
+                    LabeledGarment(path, label)
+                    for path, label in zip(
+                        garment_paths,
+                        labels,
+                        strict=True,
+                    )
+                ],
+                options=ClothingOptions(
                     colors=parsed_colors,
-                    candidates_per_color=(
-                        candidates_per_color if final_stage else 1
-                    ),
-                    max_retries=max_retries if final_stage else 0,
+                    candidates_per_color=candidates_per_color,
+                    max_retries=max_retries,
                     preserve_face=preserve_face,
                     preserve_pose=preserve_pose,
                     preserve_background=preserve_background,
-                )
-                dispatched = await runtime.task_router.dispatch(
-                    tenant,
-                    GenerationRequest(
-                        source_image=source_path,
-                        reference_image=garment_path,
-                        options=options.model_dump(),
-                    ),
-                )
-                if not isinstance(dispatched, TryOnJobResult):
-                    raise PipelineRoutingError(
-                        "The clothing tenant returned an incompatible result."
-                    )
-                result = dispatched
-                stage_job_ids.append(result.job_id)
-                if result.status in {"failed", "rejected"}:
-                    break
-                if not result.results:
-                    raise PipelineRoutingError(
-                        "A try-on stage completed without an output image."
-                    )
-                source_path = ensure_within(
-                    current.output_directory
-                    / result.job_id
-                    / result.results[0].output,
-                    current.output_directory,
-                )
-
-            if result is None:
-                raise PipelineRoutingError("No try-on stage was executed.")
-            response = _model_response(result)
-            response["applied_items"] = labels[: len(stage_job_ids)]
-            response["stage_job_ids"] = stage_job_ids
+                ),
+            )
+            response = _model_response(multi_result.result)
+            response["applied_items"] = list(multi_result.applied_items)
+            response["stage_job_ids"] = list(multi_result.stage_job_ids)
             return response
         finally:
             shutil.rmtree(upload_directory, ignore_errors=True)

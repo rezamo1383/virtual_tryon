@@ -337,6 +337,22 @@ async def test_wallpaper_pipeline_rejects_when_no_wall_is_detected(
 
 
 @pytest.mark.asyncio
+async def test_health_endpoint_reports_ok(tmp_path: Path) -> None:
+    settings = _platform_settings(tmp_path)
+    application = create_app(settings)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/health")
+    await application.state.runtime.aclose()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_generic_api_resolves_tenant_from_api_key(
     tmp_path: Path,
     valid_images: tuple[Path, Path],

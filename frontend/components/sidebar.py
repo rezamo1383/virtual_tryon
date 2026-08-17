@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, MutableMapping
+from typing import Any, cast
 
 import streamlit as st
 
@@ -16,7 +16,8 @@ def render_sidebar(
     *,
     backend_is_online: Callable[[], bool],
 ) -> str:
-    initialize_history(st.session_state)
+    state = cast(MutableMapping[str, Any], st.session_state)
+    initialize_history(state)
     with st.sidebar:
         initials = "".join(
             word[0] for word in settings.company_name.split()[:2]
@@ -48,9 +49,15 @@ def render_sidebar(
             f"<span style='color:{status_color};font-size:.8rem;font-weight:700'>● {status_text}</span>",
             unsafe_allow_html=True,
         )
+        if not online and st.button(
+            "Retry backend connection",
+            key="retry_backend_connection",
+            width="stretch",
+        ):
+            st.rerun()
         st.divider()
         st.markdown('<div class="section-label">Recent jobs</div>', unsafe_allow_html=True)
-        jobs: list[dict[str, Any]] = st.session_state[HISTORY_KEY]
+        jobs: list[dict[str, Any]] = state[HISTORY_KEY]
         if not jobs:
             st.caption("Completed generations will appear here.")
         for record in jobs[:8]:
@@ -70,7 +77,7 @@ def render_sidebar(
             key="clear_history",
             width="stretch",
         ):
-            clear_history(st.session_state)
+            clear_history(state)
             st.session_state.pop("clothing_selected_job", None)
             st.session_state.pop("wallpaper_selected_job", None)
             st.rerun()

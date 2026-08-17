@@ -52,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         effective_settings.temp_directory.mkdir(parents=True, exist_ok=True)
         effective_settings.output_directory.mkdir(parents=True, exist_ok=True)
         legacy_pipeline = build_pipeline(effective_settings)
+        await legacy_pipeline.warmup()
         runtime = build_runtime(
             effective_settings,
             legacy_pipeline=legacy_pipeline,

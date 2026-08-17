@@ -662,6 +662,14 @@ def config_check() -> None:
         "Local preprocessing: "
         + ("enabled" if settings.local_preprocessing_enabled else "disabled")
     )
+    typer.echo(
+        "Preprocessing warm-up: "
+        + ("enabled" if settings.preprocessing_warmup_enabled else "disabled")
+    )
+    typer.echo(
+        "Preprocessing debug images: "
+        + ("enabled" if settings.save_preprocessing_debug_images else "disabled")
+    )
     if "openrouter" in {analysis, generation}:
         typer.echo(f"OpenRouter base URL: {settings.openrouter_api_base_url}")
         typer.echo(

@@ -1,0 +1,3 @@
+# Optional pose estimation. MediaPipe brings JAX/JAXLIB/Scipy and is therefore
+# excluded from optimized images when POSE_ESTIMATION_ENABLED=false.
+mediapipe==0.10.21

@@ -474,6 +474,31 @@ class VirtualTryOnPipeline:
                 timeout=self.settings.preprocessing_timeout_seconds,
             )
 
+    async def warmup(self) -> None:
+        """Prime expensive local models without changing generation behavior."""
+
+        if (
+            not self.settings.preprocessing_warmup_enabled
+            or self.local_preprocessor is None
+        ):
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self.local_preprocessor.warmup),
+                timeout=self.settings.preprocessing_timeout_seconds,
+            )
+        except Exception as exc:
+            if self.settings.human_parsing_required:
+                raise
+            LOGGER.warning(
+                "local_preprocessing_warmup_failed",
+                extra={
+                    "stage": "human_parsing_warmup",
+                    "error_type": type(exc).__name__,
+                    "warning": str(exc),
+                },
+            )
+
     async def aclose(self) -> None:
         """Close both injected clients."""
 

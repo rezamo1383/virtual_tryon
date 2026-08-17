@@ -30,7 +30,7 @@
       "analysis_provider": "mock",
       "generation_provider": "gapgpt",
       "analysis_model": null,
-      "generation_model": "gemini-3-pro-image-preview",
+      "generation_model": "gpt-image-2",
       "prompt_profile": "default",
       "api_key_sha256": null,
       "enabled": true,

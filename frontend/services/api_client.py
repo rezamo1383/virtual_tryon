@@ -62,6 +62,7 @@ class BackendClient:
             timeout=httpx.Timeout(timeout_seconds),
             transport=transport,
             follow_redirects=False,
+            trust_env=False,
         )
 
     def health(self) -> dict[str, Any]:
@@ -260,6 +261,15 @@ class BackendClient:
             message = "One of the uploaded images is too large."
         elif response.status_code == 422 and detail:
             message = detail[:240]
+        elif response.status_code >= 500 and (
+            "image request failed after retries" in lowered
+            or "network" in lowered
+            or "connect" in lowered
+        ):
+            message = (
+                "The backend reached the image provider, but the provider "
+                "connection failed. Check the backend logs and retry."
+            )
         elif response.status_code >= 500:
             message = "The generation service is temporarily unavailable."
         else:

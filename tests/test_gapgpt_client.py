@@ -9,7 +9,12 @@ import httpx
 import pytest
 from PIL import Image
 
-from app.clients.gapgpt_client import GapGPTTryOnClient, GapGPTVisionClient
+import app.clients.gapgpt_client as gapgpt_module
+from app.clients.gapgpt_client import (
+    GapGPTTryOnClient,
+    GapGPTVisionClient,
+    _network_error_detail,
+)
 from app.clients.qwen_client import EVALUATION_PROMPT, GARMENT_PROMPT
 from app.clients.tryon_api_client import build_tryon_prompt
 from app.core.config import Settings
@@ -42,6 +47,38 @@ def test_prompts_are_compact_and_keep_quality_constraints() -> None:
     assert "تي شرت مردانه" in prompt
     assert "other garments" in prompt
     assert "do not recolor" in prompt
+
+
+@pytest.mark.asyncio
+async def test_gapgpt_reuses_privacy_safe_png_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "source.png"
+    image_path.write_bytes(_png_bytes())
+    calls = 0
+    original = gapgpt_module.open_image_safe
+
+    def counted_open(path: Path) -> Image.Image:
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(gapgpt_module, "open_image_safe", counted_open)
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
+    client = GapGPTTryOnClient(
+        base_url="https://api.gapgpt.app/v1",
+        api_key="gap-key",
+        http_client=http_client,
+    )
+
+    first = client._privacy_safe_png(image_path)
+    second = client._privacy_safe_png(image_path)
+
+    assert first == second
+    assert calls == 1
+    await client.aclose()
+    await http_client.aclose()
 
 
 @pytest.mark.asyncio
@@ -113,6 +150,7 @@ async def test_gapgpt_image_edit_sends_two_images_and_downloads_url(
             assert b'name="model"' in body
             assert b"gpt-image-2" in body
             assert b'name="prompt"' in body
+            assert b'name="temperature"' not in body
             return httpx.Response(
                 200,
                 json={"data": [{"url": "https://cdn.example.test/generated.png"}]},
@@ -222,6 +260,10 @@ def test_gapgpt_key_is_required() -> None:
             api_key="",
             model="gpt-4o",
         )
+
+
+def test_empty_network_error_keeps_its_type_for_docker_logs() -> None:
+    assert _network_error_detail(httpx.ReadError("")) == "ReadError"
 
 
 @pytest.mark.asyncio

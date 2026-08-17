@@ -17,6 +17,21 @@ def image(name: str = "image.png") -> UploadedImage:
     return UploadedImage(name, b"image-bytes", "image/png")
 
 
+def test_health_uses_configured_docker_backend_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == (
+            "http://virtual-tryon-backend:8000/health"
+        )
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = BackendClient(
+        "http://virtual-tryon-backend:8000",
+        transport=httpx.MockTransport(handler),
+    )
+    assert client.health()["status"] == "ok"
+    client.close()
+
+
 def test_generate_uses_generic_endpoint_and_tenant_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/generate"
@@ -128,6 +143,30 @@ def test_provider_errors_are_sanitized() -> None:
             api_key="tenant-key",
         )
     assert "secret-provider-detail" not in str(captured.value)
+    client.close()
+
+
+def test_provider_network_error_is_actionable() -> None:
+    client = BackendClient(
+        "http://backend",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                502,
+                json={
+                    "detail": (
+                        "GapGPT image request failed after retries: ReadError"
+                    )
+                },
+            )
+        ),
+    )
+    with pytest.raises(BackendAPIError, match="provider connection failed"):
+        client.generate(
+            source=image(),
+            reference=image(),
+            options={},
+            api_key="tenant-key",
+        )
     client.close()
 
 

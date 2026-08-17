@@ -251,15 +251,23 @@ Providerهای فعلی GapGPT و OpenRouter دو تصویر normalized را د�
 ```env
 LOCAL_PREPROCESSING_ENABLED=true
 BACKGROUND_REMOVAL_ENABLED=true
-POSE_ESTIMATION_ENABLED=true
+POSE_ESTIMATION_ENABLED=false
 HUMAN_PARSING_ENABLED=true
 HUMAN_PARSING_REQUIRED=false
 PREPROCESSING_DEVICE=auto
+PREPROCESSING_WARMUP_ENABLED=true
+SAVE_PREPROCESSING_DEBUG_IMAGES=false
 PREPROCESSING_FAIL_OPEN=false
 MIN_TRYON_SUITABILITY_SCORE=0.70
 MODEL_CACHE_DIRECTORY=models
 LOCAL_MODEL_OFFLINE_MODE=false
 ```
+
+`PREPROCESSING_WARMUP_ENABLED=true` مدل human parsing را هنگام startup سرویس API
+بارگذاری می‌کند تا هزینه‌ی cold start وارد درخواست اول کاربر نشود. پوشه‌ی `models/`
+در Compose روی میزبان mount شده است، بنابراین فایل مدل بین restartها باقی می‌ماند.
+خاموش بودن `SAVE_PREPROCESSING_DEBUG_IMAGES` فقط مانع ذخیره‌ی تصاویر تشخیصی می‌شود و
+هیچ تغییری در تصویر، mask یا prompt ارسالی به مدل تولید ایجاد نمی‌کند.
 
 `PREPROCESSING_DEVICE=auto` ابتدا یک tensor واقعی CUDA می‌سازد و عملیات انجام
 می‌دهد. اگر `nvidia-smi`، driver یا tensor CUDA خطا دهد، خطا log و پردازش روی CPU
@@ -533,11 +541,39 @@ python cli.py run --request-json request.json
 docker compose up --build -d
 ```
 
+Compose مقدار `API_BASE_URL` فرانت‌اند را در runtime و به‌صورت پیش‌فرض روی
+`http://virtual-tryon-backend:8000` قرار می‌دهد. سرویس backend همین network alias
+را دارد. این مقدار داخل image فرانت‌اند ذخیره نشده و با `API_BASE_URL` محیط قابل
+override است.
+
 پس از healthy شدن سرویس‌ها:
 
 - Frontend: `http://localhost:8501`
 - Backend API: `http://localhost:8000`
 - API docs: `http://localhost:8000/docs`
+
+برای اجرای standalone imageها روی یک شبکه Docker، آدرس backend باید هنگام اجرای
+Frontend تزریق شود؛ در نبود این مقدار، Frontend عمداً با خطای configuration متوقف
+می‌شود و به localhost داخل کانتینر fallback نمی‌کند:
+
+```bash
+docker network create virtual-tryon-network
+
+docker run --name virtual-tryon-backend \
+  --network virtual-tryon-network \
+  --env-file .env \
+  -p 8000:8000 \
+  -v "${PWD}/config:/app/config:ro" \
+  -v "${PWD}/outputs:/app/outputs" \
+  -v "${PWD}/models:/app/models" \
+  cr.samiansoft.com/virtual-tryon-backend:latest
+
+docker run --name virtual-tryon-frontend \
+  --network virtual-tryon-network \
+  -p 8501:8501 \
+  -e API_BASE_URL=http://virtual-tryon-backend:8000 \
+  cr.samiansoft.com/virtual-tryon-frontend:latest
+```
 
 مشاهدهٔ وضعیت و logها:
 
@@ -545,6 +581,40 @@ docker compose up --build -d
 docker compose ps
 docker compose logs -f backend frontend
 docker compose down
+```
+
+اگر UI وضعیت `Backend offline` نشان داد، ابتدا Environment و ارتباط واقعی داخل
+کانتینر Frontend را بررسی کنید. image فرانت‌اند `httpx` دارد و به `curl` نیاز نیست:
+
+```bash
+docker compose exec frontend python -c \
+  "import os; print(os.environ.get('API_BASE_URL'))"
+
+docker compose exec frontend python -c \
+  "import os,httpx; u=os.environ['API_BASE_URL'].rstrip('/'); print(httpx.get(u + '/health', timeout=5, trust_env=False).json())"
+
+docker network inspect virtual-tryon-network
+docker logs virtual-tryon-backend
+```
+
+خروجی فرمان دوم باید JSON شامل `"status": "ok"` باشد. اگر hostname resolve نشد،
+هر دو کانتینر روی یک user-defined network نیستند یا نام backend با مقدار
+`API_BASE_URL` تطابق ندارد. اگر `Connection refused` دریافت شد، Backend هنوز آماده
+نیست یا روی `0.0.0.0:8000` گوش نمی‌دهد. دکمه `Retry backend connection` در Sidebar
+نیز health check واقعی را دوباره اجرا می‌کند.
+
+تغییر source code به‌صورت خودکار tag موجود در registry را به‌روزرسانی نمی‌کند.
+پس از تغییرات باید هر دو image دوباره build و push و روی میزبان pull شوند:
+
+```bash
+docker build -t cr.samiansoft.com/virtual-tryon-backend:latest .
+docker build -f frontend/Dockerfile \
+  -t cr.samiansoft.com/virtual-tryon-frontend:latest .
+docker push cr.samiansoft.com/virtual-tryon-backend:latest
+docker push cr.samiansoft.com/virtual-tryon-frontend:latest
+docker pull cr.samiansoft.com/virtual-tryon-backend:latest
+docker pull cr.samiansoft.com/virtual-tryon-frontend:latest
+docker compose up -d --no-build
 ```
 
 به‌صورت پیش‌فرض providerهای mock فعال‌اند. Docker Compose متغیرهای provider را
@@ -567,6 +637,19 @@ inputs/   outputs/   models/   logs/   temp/   config/
 INSTALL_PREPROCESSING=false
 LOCAL_PREPROCESSING_ENABLED=false
 ```
+
+در image بهینه‌ی Compose، چون pose و background removal در تنظیمات فعلی خاموش‌اند،
+وابستگی‌های سنگین MediaPipe و rembg نیز نصب نمی‌شوند. Human parsing و wall
+segmentation همچنان از ONNX Runtime استفاده می‌کنند. برای ساخت image کامل با
+قابلیت فعال‌سازی این دو feature، مقادیر زیر را پیش از build در `.env` قرار دهید:
+
+```dotenv
+INSTALL_POSE=true
+INSTALL_BACKGROUND_REMOVAL=true
+```
+
+نصب dependencyهای Docker دارای timeout صدوبیست‌ثانیه‌ای، ده retry داخلی pip و
+سه تلاش برای هر گروه requirements است؛ cache دانلودها نیز بین buildها حفظ می‌شود.
 
 ### اجرای CLI با Docker
 

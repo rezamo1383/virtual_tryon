@@ -99,6 +99,24 @@ class LocalImagePreprocessor:
             device=self.device,
         )
 
+    def warmup(self) -> int:
+        """Initialize the configured parser before the first user request."""
+
+        if not self.settings.human_parsing_enabled:
+            return 0
+        started = time.perf_counter()
+        self.human_parser.parse(Image.new("RGB", (512, 512), (127, 127, 127)))
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        LOGGER.info(
+            "human_parsing_warmup_completed",
+            extra={
+                "stage": "human_parsing_warmup",
+                "device": self.device,
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+        return elapsed_ms
+
     def preprocess(
         self,
         person_image_path: Path,

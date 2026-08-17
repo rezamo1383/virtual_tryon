@@ -2,15 +2,19 @@ name: virtual-tryon
 
 services:
   backend:
-    image: virtual-tryon-backend:local
+    image: "${BACKEND_IMAGE:-cr.samiansoft.com/virtual-tryon-backend:latest}"
     build:
       context: .
       dockerfile: Dockerfile
       args:
         INSTALL_PREPROCESSING: "${INSTALL_PREPROCESSING:-true}"
+        INSTALL_POSE: "${INSTALL_POSE:-false}"
+        INSTALL_BACKGROUND_REMOVAL: "${INSTALL_BACKGROUND_REMOVAL:-false}"
     init: true
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    env_file:
+      - .env
     environment:
       HOME: /tmp
       APP_ENV: "${APP_ENV:-production}"
@@ -39,6 +43,7 @@ services:
       TRYON_API_KEY: "${TRYON_API_KEY:-}"
       TRYON_MODEL: "${TRYON_MODEL:-}"
       LOCAL_PREPROCESSING_ENABLED: "${LOCAL_PREPROCESSING_ENABLED:-true}"
+      PREPROCESSING_WARMUP_ENABLED: "${PREPROCESSING_WARMUP_ENABLED:-true}"
       PREPROCESSING_DEVICE: "${PREPROCESSING_DEVICE:-cpu}"
       WALLPAPER_SEGMENTATION_DEVICE: "${WALLPAPER_SEGMENTATION_DEVICE:-cpu}"
       MODEL_CACHE_DIRECTORY: /app/models
@@ -55,18 +60,21 @@ services:
       - ./logs:/app/logs
       - ./models:/app/models
     networks:
-      - app-network
+      app-network:
+        aliases:
+          - virtual-tryon-backend
     stop_grace_period: 20s
 
   frontend:
-    image: virtual-tryon-frontend:local
+    image: "${FRONTEND_IMAGE:-cr.samiansoft.com/virtual-tryon-frontend:latest}"
     build:
       context: .
       dockerfile: frontend/Dockerfile
     init: true
     restart: unless-stopped
     environment:
-      API_BASE_URL: http://backend:8000
+      APP_ENV: "${FRONTEND_APP_ENV:-production}"
+      API_BASE_URL: "${API_BASE_URL:-http://virtual-tryon-backend:8000}"
       CLOTHING_API_KEY: "${CLOTHING_API_KEY:-}"
       WALLPAPER_API_KEY: "${WALLPAPER_API_KEY:-}"
       COMPANY_NAME: "${COMPANY_NAME:-Vision Studio}"

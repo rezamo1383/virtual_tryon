@@ -1,0 +1,4 @@
+# Core application and CPU ONNX inference used by human parsing and wallpaper
+# segmentation. No CUDA package is required.
+-r requirements.txt
+onnxruntime>=1.20,<2

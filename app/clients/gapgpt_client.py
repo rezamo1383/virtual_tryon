@@ -7,6 +7,8 @@ import binascii
 import io
 import ipaddress
 import logging
+import socket
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -27,6 +29,31 @@ from app.prompts.clothing import ClothingPromptBuilder
 from app.utils.image_utils import decode_image_bytes, open_image_safe
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _provider_transport() -> httpx.AsyncHTTPTransport:
+    """Keep long image-generation connections alive across Docker NAT."""
+
+    socket_options: list[tuple[int, int, int]] = [
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    ]
+    for option_name, value in (
+        ("TCP_KEEPIDLE", 10),
+        ("TCP_KEEPINTVL", 5),
+        ("TCP_KEEPCNT", 3),
+    ):
+        option = getattr(socket, option_name, None)
+        if option is not None:
+            socket_options.append((socket.IPPROTO_TCP, option, value))
+    return httpx.AsyncHTTPTransport(
+        retries=1,
+        socket_options=socket_options,
+    )
+
+
+def _network_error_detail(exc: Exception) -> str:
+    message = str(exc).strip()
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 class GapGPTVisionClient(OpenAICompatibleQwenClient):
@@ -72,6 +99,8 @@ class GapGPTTryOnClient(TryOnAPIClient):
     """Send person and garment references to GapGPT's image-edit API."""
 
     supports_text_prompt = True
+    _PNG_CACHE_MAX_ENTRIES = 8
+    _PNG_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
     def __init__(
         self,
@@ -110,9 +139,13 @@ class GapGPTTryOnClient(TryOnAPIClient):
         self._wallpaper_size = wallpaper_size.strip()
         self._owns_client = http_client is None
         self._prompt_builder = prompt_builder or ClothingPromptBuilder()
+        self._png_cache: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+        self._png_cache_size = 0
         self._client = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
             follow_redirects=False,
+            transport=_provider_transport(),
+            trust_env=False,
         )
 
     async def generate(
@@ -153,7 +186,6 @@ class GapGPTTryOnClient(TryOnAPIClient):
             "n": "1",
             "quality": quality,
             "output_format": "png",
-            "temperature": "0.3",
         }
         size = self._resolved_size(person_image, category)
         if size:
@@ -177,8 +209,13 @@ class GapGPTTryOnClient(TryOnAPIClient):
         except TryOnAPIError:
             raise
         except Exception as exc:
+            detail = _network_error_detail(exc)
+            LOGGER.error(
+                "gapgpt_image_network_failed",
+                extra={"error_type": type(exc).__name__, "error": detail},
+            )
             raise TryOnAPIError(
-                f"GapGPT image request failed after retries: {exc}"
+                f"GapGPT image request failed after retries: {detail}"
             ) from exc
         raise TryOnAPIError("GapGPT image request failed without a response.")
 
@@ -321,13 +358,27 @@ class GapGPTTryOnClient(TryOnAPIClient):
                 "GapGPT returned a non-public generated-image URL."
             )
 
-    @staticmethod
-    def _privacy_safe_png(path: Path) -> bytes:
+    def _privacy_safe_png(self, path: Path) -> bytes:
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        cached = self._png_cache.get(key)
+        if cached is not None:
+            self._png_cache.move_to_end(key)
+            return cached
         image = open_image_safe(path)
         normalized = image.convert("RGBA" if "A" in image.getbands() else "RGB")
         buffer = io.BytesIO()
         normalized.save(buffer, format="PNG", optimize=True)
-        return buffer.getvalue()
+        encoded = buffer.getvalue()
+        self._png_cache[key] = encoded
+        self._png_cache_size += len(encoded)
+        while (
+            len(self._png_cache) > self._PNG_CACHE_MAX_ENTRIES
+            or self._png_cache_size > self._PNG_CACHE_MAX_BYTES
+        ) and len(self._png_cache) > 1:
+            _, removed = self._png_cache.popitem(last=False)
+            self._png_cache_size -= len(removed)
+        return encoded
 
     @staticmethod
     def _safe_error_message(response: httpx.Response) -> str:
@@ -347,5 +398,7 @@ class GapGPTTryOnClient(TryOnAPIClient):
         return " ".join(message.split())[:300]
 
     async def aclose(self) -> None:
+        self._png_cache.clear()
+        self._png_cache_size = 0
         if self._owns_client:
             await self._client.aclose()

@@ -35,13 +35,19 @@ cd F:\gold-list2\virtual_tryon
 uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-Start Streamlit in a second terminal. Run it from the frontend directory so
-Streamlit loads the included theme and secrets configuration:
+Start Streamlit in a second terminal. Local development defaults to
+`http://127.0.0.1:8000` only when `APP_ENV=development` (the non-container
+default). Setting `API_BASE_URL` explicitly is recommended. Run from the
+frontend directory so Streamlit loads its theme and optional secrets configuration:
 
 ```powershell
 cd F:\gold-list2\virtual_tryon\frontend
+$env:API_BASE_URL = "http://127.0.0.1:8000"
 streamlit run app.py --server.port 8501
 ```
+
+Alternatively, copy `.streamlit/secrets.toml.example` to the Git-ignored
+`.streamlit/secrets.toml` and set `API_BASE_URL` there for local development.
 
 Open `http://127.0.0.1:8501`.
 
@@ -57,6 +63,23 @@ WALLPAPER_API_KEY
 COMPANY_NAME
 API_TIMEOUT_SECONDS
 MAX_HISTORY_ITEMS
+```
+
+Configuration priority is Environment Variable, Streamlit Secrets, then the
+local-only development fallback. `API_BASE_URL` must be an absolute HTTP(S) URL.
+The frontend Docker image sets `APP_ENV=production`, so the localhost fallback is
+disabled in containers and a missing `API_BASE_URL` fails with a configuration
+error instead of connecting to the container's loopback interface.
+
+For a standalone Docker deployment, pass the backend container DNS name at
+runtime; it is not stored in the frontend image:
+
+```bash
+docker run --name virtual-tryon-frontend \
+  --network virtual-tryon-network \
+  -p 8501:8501 \
+  -e API_BASE_URL=http://virtual-tryon-backend:8000 \
+  cr.samiansoft.com/virtual-tryon-frontend:latest
 ```
 
 The local `secrets.toml` is ignored by Git. Only tenant access keys belong in

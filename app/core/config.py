@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     mask_feather_radius: int = Field(5, ge=0, le=50)
 
     save_preprocessing_debug_images: bool = True
+    preprocessing_warmup_enabled: bool = False
     preprocessing_fail_open: bool = False
     preprocessing_timeout_seconds: float = Field(120, gt=0, le=1800)
     preprocessing_max_concurrency: int = Field(1, ge=1, le=16)

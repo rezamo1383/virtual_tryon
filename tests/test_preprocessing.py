@@ -370,6 +370,48 @@ def test_human_parsing_failure_activates_fallback(
     assert result.person.parsing_debug_path is not None
 
 
+def test_human_parser_warmup_primes_injected_parser(tmp_path: Path) -> None:
+    parsed_sizes: list[tuple[int, int]] = []
+
+    class RecordingParser:
+        def parse(self, image: Image.Image) -> HumanParsingResult:
+            parsed_sizes.append(image.size)
+            return _parsing(image.size)
+
+    settings = Settings(
+        _env_file=None,
+        preprocessing_device="cpu",
+        model_cache_directory=tmp_path / "models",
+        human_parsing_enabled=True,
+    )
+    preprocessor = LocalImagePreprocessor(
+        settings,
+        human_parser=RecordingParser(),
+    )
+
+    assert preprocessor.warmup() >= 0
+    assert parsed_sizes == [(512, 512)]
+
+
+def test_human_parser_warmup_skips_when_disabled(tmp_path: Path) -> None:
+    class UnexpectedParser:
+        def parse(self, image: Image.Image) -> HumanParsingResult:
+            raise AssertionError("disabled parser must not be called")
+
+    settings = Settings(
+        _env_file=None,
+        preprocessing_device="cpu",
+        model_cache_directory=tmp_path / "models",
+        human_parsing_enabled=False,
+    )
+    preprocessor = LocalImagePreprocessor(
+        settings,
+        human_parser=UnexpectedParser(),
+    )
+
+    assert preprocessor.warmup() == 0
+
+
 def test_artifact_path_cannot_escape_job(tmp_path: Path) -> None:
     settings = Settings(
         _env_file=None,

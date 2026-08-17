@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import streamlit as st
 
 
+LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -51,12 +54,21 @@ def _client(base_url: str, timeout: float) -> BackendClient:
     return BackendClient(base_url, timeout_seconds=timeout)
 
 
-@st.cache_data(ttl=8, show_spinner=False)
 def _backend_online(base_url: str, timeout: float) -> bool:
     probe = BackendClient(base_url, timeout_seconds=min(timeout, 4.0))
     try:
         return probe.health().get("status") == "ok"
-    except BackendAPIError:
+    except BackendAPIError as exc:
+        parsed = urlsplit(base_url)
+        LOGGER.warning(
+            "backend_health_check_failed",
+            extra={
+                "backend_host": parsed.hostname or "invalid",
+                "backend_port": parsed.port,
+                "error": str(exc),
+                "cause": type(exc.__cause__).__name__ if exc.__cause__ else None,
+            },
+        )
         return False
     finally:
         probe.close()

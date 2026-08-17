@@ -1,0 +1,2 @@
+# Optional background removal and its image-processing dependencies.
+rembg[cpu]>=2.0.67,<2.1

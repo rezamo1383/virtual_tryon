@@ -64,7 +64,7 @@ COPY config/tenants.example.json ./config/tenants.example.json
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --create-home app \
-    && mkdir -p inputs outputs temp logs models config \
+    && mkdir -p inputs outputs prepared_garments temp logs models config \
     && chown -R app:app /app /home/app
 
 USER app

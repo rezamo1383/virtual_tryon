@@ -119,9 +119,7 @@ def test_cuda_failure_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None
             is_available=lambda: True,
             synchronize=lambda: None,
         ),
-        tensor=lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("GPU lost")
-        ),
+        tensor=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("GPU lost")),
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     assert get_compute_device("auto") == "cpu"
@@ -147,6 +145,12 @@ def test_non_person_scene_is_rejected_even_with_zero_threshold(
 ) -> None:
     project_root = Path(__file__).resolve().parents[1]
     person = project_root / "inputs" / "persons" / filename
+    if not person.is_file():
+        person = tmp_path / filename
+        Image.new("RGB", (640, 640), (15, 20, 35)).save(
+            person,
+            format="JPEG",
+        )
     garment = project_root / "inputs" / "garments" / "gray_sweatshirt.png"
     settings = Settings(
         _env_file=None,
@@ -275,9 +279,7 @@ def test_preserve_mask_protects_face_and_hands() -> None:
     preserve_values = np.asarray(preserve)
     assert np.count_nonzero(preserve_values[8:30, 40:60]) > 0
     assert np.count_nonzero(preserve_values[62:74, 20:32]) > 0
-    assert np.count_nonzero(
-        replace_values[preserve_values > 0]
-    ) == 0
+    assert np.count_nonzero(replace_values[preserve_values > 0]) == 0
 
 
 def test_garment_touching_edge_creates_warning() -> None:

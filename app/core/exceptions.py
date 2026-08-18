@@ -25,6 +25,14 @@ class InputValidationError(VirtualTryOnError):
     """Raised when an input file or request is unsafe or invalid."""
 
 
+class ProductNotFoundError(VirtualTryOnError):
+    """Raised when a tenant has no known prepared product identifier."""
+
+
+class PreparedGarmentNotFoundError(VirtualTryOnError):
+    """Raised when a product has no complete prepared garment artifacts."""
+
+
 class QwenAPIError(VirtualTryOnError):
     """Raised for Qwen transport, protocol, or validation failures."""
 

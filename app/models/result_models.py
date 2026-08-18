@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.analysis_models import GarmentAnalysis, PersonAnalysis
 from app.models.evaluation_models import OutputEvaluation
 from app.preprocessing.preprocessing_models import PreprocessingResult
+from app.preprocessing.preprocessing_models import PersonPreprocessingResult
+from app.models.request_models import GarmentCategory, TryOnMode
 
 
 class CandidateResult(BaseModel):
@@ -58,3 +60,7 @@ class TryOnJobResult(BaseModel):
     error: str | None = None
     started_at: datetime
     completed_at: datetime
+    product_id: str | None = None
+    category: GarmentCategory | None = None
+    mode: TryOnMode | None = None
+    person_preprocessing: PersonPreprocessingResult | None = None

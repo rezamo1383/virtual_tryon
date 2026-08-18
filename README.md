@@ -401,7 +401,7 @@ TRYON_PROVIDER=gapgpt
 GAPGPT_API_BASE_URL=https://api.gapgpt.app/v1
 GAPGPT_API_KEY=your-private-gapgpt-api-key
 GAPGPT_VISION_MODEL=gpt-4o
-GAPGPT_IMAGE_MODEL=gpt-image-2
+GAPGPT_IMAGE_MODEL=gpt-image-1.5
 GAPGPT_TIMEOUT_SECONDS=180
 
 GAPGPT_IMAGE_EDIT_ENDPOINT=/images/edits
@@ -700,6 +700,11 @@ Endpointها:
   `garment_images` و آرایهٔ JSON متناظر `garment_types`. هر آیتم به‌ترتیب روی
   خروجی قبلی اعمال می‌شود. قرارداد قدیمی `garment_image` و `product_title` برای
   درخواست تک‌لباس همچنان پشتیبانی می‌شود.
+- `POST /api/v1/products/{product_id}/garment`: آماده‌سازی و ذخیرهٔ garment یک
+  محصول؛ این عملیات هنگام ورود/تغییر محصول انجام می‌شود، نه در درخواست مشتری.
+- `POST /api/v1/tryon/products/{product_id}`: مسیر production با
+  `person_image`، `category` و `product_title` اختیاری.
+- `GET /api/v1/results/{job_id}/image`: دریافت امن تصویر نهایی متعلق به tenant.
 - `POST /v1/preprocess`: فقط preprocessing محلی با `person_image`،
   `garment_image` و `human_parsing_enabled` اختیاری؛ هیچ API خارجی فراخوانی
   نمی‌شود و پاسخ فقط نام نسبی artifactها را برمی‌گرداند.
@@ -723,6 +728,98 @@ curl -X POST http://127.0.0.1:8000/api/v1/generate \
   -F "source_image=@inputs/persons/person.jpg" \
   -F "reference_image=@inputs/garments/hoodie.png" \
   -F 'options={"product_title":"Men hoodie","candidates_per_color":1,"max_retries":0}'
+```
+
+### آزمون مسیر Production با Postman
+
+ابتدا لباس محصول را یک‌بار آماده کنید. در Postman یک درخواست `POST` بسازید:
+
+```text
+URL: http://localhost:8200/api/v1/products/125/garment
+Header: X-API-Key = tenant-secret
+Body → form-data:
+  garment_image  File  product-125.png
+  force          Text  false
+```
+
+معادل curl:
+
+```bash
+curl -X POST "http://localhost:8200/api/v1/products/125/garment" \
+  -H "X-API-Key: tenant-secret" \
+  -F "garment_image=@inputs/garments/product-125.png" \
+  -F "force=false"
+```
+
+سپس Try-On را در Postman با `multipart/form-data` اجرا کنید:
+
+```text
+URL: http://localhost:8200/api/v1/tryon/products/125
+Header: X-API-Key = tenant-secret
+Body → form-data:
+  person_image   File  customer.jpg       (required)
+  category       Text  upper_body         (required)
+  product_title  Text  Men's T-shirt      (optional)
+```
+
+categoryهای معتبر: `upper_body`، `lower_body`، `dress` و `outerwear`.
+
+```bash
+curl -X POST "http://localhost:8200/api/v1/tryon/products/125" \
+  -H "X-API-Key: tenant-secret" \
+  -F "person_image=@inputs/persons/customer.jpg" \
+  -F "category=upper_body" \
+  -F "product_title=Men's T-shirt"
+```
+
+پاسخ موفق فقط قرارداد عمومی HTTP را برمی‌گرداند و شامل path داخلی نیست:
+
+```json
+{
+  "status": "success",
+  "job_id": "job_20260818_abcdef",
+  "product_id": "125",
+  "category": "upper_body",
+  "mode": "fast",
+  "output_image_url": "http://localhost:8200/api/v1/results/job_20260818_abcdef/image",
+  "elapsed_ms": 8500
+}
+```
+
+برای مشاهدهٔ تصویر، مقدار `output_image_url` را با همان header احراز هویت GET
+کنید:
+
+```bash
+curl "http://localhost:8200/api/v1/results/job_20260818_abcdef/image" \
+  -H "X-API-Key: tenant-secret" \
+  --output tryon-result.png
+```
+
+خطاها قرارداد ثابتی دارند:
+
+```json
+{
+  "status": "error",
+  "error": "prepared_garment_not_found",
+  "message": "Prepared garment metadata is missing for this product."
+}
+```
+
+مسیر آمادهٔ محصول در `PREPARED_GARMENT_DIRECTORY` ذخیره می‌شود و Compose آن را
+روی volume پایدار `./prepared_garments:/app/prepared_garments` mount می‌کند.
+
+```env
+TRYON_MODE=fast
+PREPARED_GARMENT_DIRECTORY=prepared_garments
+```
+
+در `fast` دقیقاً یک generation، صفر evaluation و صفر retry انجام می‌شود. برای
+فعال‌کردن رفتار قبلیِ چند candidate، ارزیابی و انتخاب بهترین نتیجه:
+
+```env
+TRYON_MODE=quality
+CANDIDATES_PER_COLOR=2
+MAX_GENERATION_RETRIES=1
 ```
 
 رنگ اصلی همهٔ محصولات مرجع به‌صورت پیش‌فرض حفظ می‌شود. برای هر عکس باید دقیقاً

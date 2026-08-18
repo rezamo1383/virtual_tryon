@@ -3,12 +3,61 @@
 from __future__ import annotations
 
 from pathlib import Path
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 ORIGINAL_GARMENT_COLOR = "original"
+
+
+class GarmentCategory(str, Enum):
+    """Trusted clothing categories accepted by the production endpoint."""
+
+    UPPER_BODY = "upper_body"
+    LOWER_BODY = "lower_body"
+    DRESS = "dress"
+    OUTERWEAR = "outerwear"
+
+
+class TryOnMode(str, Enum):
+    """Generation policy for prepared-product requests."""
+
+    FAST = "fast"
+    QUALITY = "quality"
+
+
+class PreparedTryOnRequest(BaseModel):
+    """Production request using a separately prepared product garment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    person_image: Path
+    product_id: str = Field(min_length=1, max_length=128)
+    category: GarmentCategory
+    tenant_id: str = Field(min_length=1, max_length=100)
+    product_title: str | None = Field(default=None, max_length=160)
+
+    @field_validator("product_id", "tenant_id")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(
+            character
+            not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+            for character in normalized
+        ):
+            raise ValueError("identifier contains unsupported characters")
+        return normalized
+
+    @field_validator("product_title")
+    @classmethod
+    def normalize_prepared_product_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
 
 
 class GenerationRequest(BaseModel):

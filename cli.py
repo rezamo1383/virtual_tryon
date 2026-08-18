@@ -84,9 +84,7 @@ def _request_from_options(
         except (OSError, json.JSONDecodeError, ValidationError) as exc:
             raise typer.BadParameter(f"Invalid request JSON: {exc}") from exc
     if person is None or garment is None:
-        raise typer.BadParameter(
-            "--person and --garment are required."
-        )
+        raise typer.BadParameter("--person and --garment are required.")
     return TryOnRequest(
         person_image=person,
         garment_image=garment,
@@ -98,9 +96,7 @@ def _request_from_options(
             else settings.candidates_per_color
         ),
         max_retries=(
-            max_retries
-            if max_retries is not None
-            else settings.max_generation_retries
+            max_retries if max_retries is not None else settings.max_generation_retries
         ),
     )
 
@@ -129,9 +125,7 @@ def labeled_garments_from_options(
     if any(not label for label in normalized):
         raise typer.BadParameter("Garment types cannot be empty.")
     if any(len(label) > 80 for label in normalized):
-        raise typer.BadParameter(
-            "Each --garment-type must be 80 characters or fewer."
-        )
+        raise typer.BadParameter("Each --garment-type must be 80 characters or fewer.")
     return [
         LabeledGarment(path, label)
         for path, label in zip(paths, normalized, strict=True)
@@ -153,9 +147,7 @@ def _clothing_options(
             else settings.candidates_per_color
         ),
         max_retries=(
-            max_retries
-            if max_retries is not None
-            else settings.max_generation_retries
+            max_retries if max_retries is not None else settings.max_generation_retries
         ),
     )
 
@@ -227,9 +219,7 @@ def _print_tryon_result(
     )
     for item in result.results:
         marker = "accepted" if item.accepted else "best-effort"
-        typer.echo(
-            f"  {item.color}: {item.output} | score={item.score:.3f} | {marker}"
-        )
+        typer.echo(f"  {item.color}: {item.output} | score={item.score:.3f} | {marker}")
 
 
 async def _run_wallpaper(
@@ -256,13 +246,7 @@ async def _run_wallpaper(
     if result.output:
         typer.echo(
             "Output: "
-            + str(
-                (
-                    settings.output_directory
-                    / result.job_id
-                    / result.output
-                ).resolve()
-            )
+            + str((settings.output_directory / result.job_id / result.output).resolve())
         )
     if result.score is not None:
         typer.echo(f"Score: {result.score:.3f}")
@@ -517,10 +501,7 @@ def preprocess(
     except (AIPlatformError, OSError, ValueError) as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
-    accepted = (
-        result.person.validation.accepted
-        and result.garment.validation.accepted
-    )
+    accepted = result.person.validation.accepted and result.garment.validation.accepted
     score = min(
         result.person.validation.score,
         result.garment.validation.score,
@@ -543,9 +524,7 @@ def preprocess(
     typer.echo(f"Accepted: {str(accepted).lower()}")
     typer.echo(f"Degraded mode: {str(result.degraded_mode).lower()}")
     typer.echo("Warnings: " + (", ".join(warnings) if warnings else "none"))
-    typer.echo(
-        "Rejection reasons: " + (", ".join(reasons) if reasons else "none")
-    )
+    typer.echo("Rejection reasons: " + (", ".join(reasons) if reasons else "none"))
     typer.echo("Artifacts:")
     for path in (
         result.person.normalized_image_path,
@@ -621,11 +600,7 @@ def config_check() -> None:
         "Configured tenants: "
         + ", ".join(
             f"{tenant.tenant_id}={tenant.pipeline}"
-            + (
-                f"[{tenant.generation_model}]"
-                if tenant.generation_model
-                else ""
-            )
+            + (f"[{tenant.generation_model}]" if tenant.generation_model else "")
             for tenant in runtime.tenant_store.all()
         )
     )
@@ -662,6 +637,11 @@ def config_check() -> None:
         "Local preprocessing: "
         + ("enabled" if settings.local_preprocessing_enabled else "disabled")
     )
+    typer.echo(f"Prepared-product Try-On mode: {settings.tryon_mode}")
+    typer.echo(
+        "Prepared garment directory: "
+        + str(settings.prepared_garment_directory.resolve(strict=False))
+    )
     typer.echo(
         "Preprocessing warm-up: "
         + ("enabled" if settings.preprocessing_warmup_enabled else "disabled")
@@ -681,13 +661,12 @@ def config_check() -> None:
             + (settings.openrouter_vision_model or "MISSING")
         )
         typer.echo(
-            "OpenRouter image model: "
-            + (settings.openrouter_image_model or "MISSING")
+            "OpenRouter image model: " + (settings.openrouter_image_model or "MISSING")
         )
-        required_missing = not settings.openrouter_api_key or (
-            analysis == "openrouter" and not settings.openrouter_vision_model
-        ) or (
-            generation == "openrouter" and not settings.openrouter_image_model
+        required_missing = (
+            not settings.openrouter_api_key
+            or (analysis == "openrouter" and not settings.openrouter_vision_model)
+            or (generation == "openrouter" and not settings.openrouter_image_model)
         )
         if required_missing:
             raise typer.Exit(code=1)
@@ -698,21 +677,14 @@ def config_check() -> None:
             + ("configured" if settings.gapgpt_api_key else "MISSING")
         )
         typer.echo(
-            "GapGPT vision model: "
-            + (settings.gapgpt_vision_model or "MISSING")
+            "GapGPT vision model: " + (settings.gapgpt_vision_model or "MISSING")
         )
-        typer.echo(
-            "GapGPT image model: "
-            + (settings.gapgpt_image_model or "MISSING")
-        )
-        typer.echo(
-            "GapGPT image endpoint: "
-            + settings.gapgpt_image_edit_endpoint
-        )
-        required_missing = not settings.gapgpt_api_key or (
-            analysis == "gapgpt" and not settings.gapgpt_vision_model
-        ) or (
-            generation == "gapgpt" and not settings.gapgpt_image_model
+        typer.echo("GapGPT image model: " + (settings.gapgpt_image_model or "MISSING"))
+        typer.echo("GapGPT image endpoint: " + settings.gapgpt_image_edit_endpoint)
+        required_missing = (
+            not settings.gapgpt_api_key
+            or (analysis == "gapgpt" and not settings.gapgpt_vision_model)
+            or (generation == "gapgpt" and not settings.gapgpt_image_model)
         )
         if required_missing:
             raise typer.Exit(code=1)

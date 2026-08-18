@@ -7,8 +7,10 @@ from pathlib import Path
 from app.models.request_models import (
     ClothingOptions,
     GenerationRequest,
+    PreparedTryOnRequest,
     TryOnRequest,
 )
+from app.models.prepared_garment_models import GarmentPreparationResult
 from app.models.result_models import TryOnJobResult
 from app.pipelines.base import BasePipeline
 from app.preprocessing.preprocessing_models import PreprocessingResult
@@ -50,6 +52,32 @@ class ClothingPipeline(BasePipeline):
         job_directory = self.engine.settings.output_directory / result.job_id
         self.engine.output_manager.write_result(job_directory, routed)
         return routed
+
+    async def run_prepared(
+        self,
+        request: PreparedTryOnRequest,
+    ) -> TryOnJobResult:
+        """Run the tenant's optimized prepared-product path."""
+
+        if request.tenant_id != self.tenant_id:
+            raise ValueError("Prepared request tenant does not match pipeline.")
+        return await self.engine.run_prepared(request)
+
+    async def prepare_garment(
+        self,
+        *,
+        product_id: str,
+        garment_image: Path,
+        force: bool = False,
+    ) -> GarmentPreparationResult:
+        """Prepare one tenant-owned product independently."""
+
+        return await self.engine.prepare_garment(
+            tenant_id=self.tenant_id,
+            product_id=product_id,
+            garment_image=garment_image,
+            force=force,
+        )
 
     async def preprocess(
         self,

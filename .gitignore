@@ -9,6 +9,7 @@ __pycache__/
 logs/*
 temp/*
 outputs/*
+prepared_garments/*
 inputs/persons/*
 inputs/garments/*
 inputs/rooms/*
@@ -18,6 +19,7 @@ config/tenants.json
 !logs/.gitkeep
 !temp/.gitkeep
 !outputs/.gitkeep
+!prepared_garments/.gitkeep
 !inputs/persons/.gitkeep
 !inputs/garments/.gitkeep
 !inputs/rooms/.gitkeep

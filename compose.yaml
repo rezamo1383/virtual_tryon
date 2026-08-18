@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     env_file:
-      - .env
+      - .env  
     environment:
       HOME: /tmp
       APP_ENV: "${APP_ENV:-production}"
@@ -36,18 +36,20 @@ services:
       GAPGPT_API_BASE_URL: "${GAPGPT_API_BASE_URL:-https://api.gapgpt.app/v1}"
       GAPGPT_API_KEY: "${GAPGPT_API_KEY:-}"
       GAPGPT_VISION_MODEL: "${GAPGPT_VISION_MODEL:-gpt-4o}"
-      GAPGPT_IMAGE_MODEL: "${GAPGPT_IMAGE_MODEL:-gpt-image-2}"
+      GAPGPT_IMAGE_MODEL: "${GAPGPT_IMAGE_MODEL:-gpt-image-1.5}"
       GAPGPT_IMAGE_EDIT_ENDPOINT: "${GAPGPT_IMAGE_EDIT_ENDPOINT:-/images/edits}"
       GAPGPT_IMAGE_FIELD_NAME: "${GAPGPT_IMAGE_FIELD_NAME:-image[]}"
       TRYON_API_BASE_URL: "${TRYON_API_BASE_URL:-}"
       TRYON_API_KEY: "${TRYON_API_KEY:-}"
       TRYON_MODEL: "${TRYON_MODEL:-}"
+      TRYON_MODE: "${TRYON_MODE:-fast}"
       LOCAL_PREPROCESSING_ENABLED: "${LOCAL_PREPROCESSING_ENABLED:-true}"
       PREPROCESSING_WARMUP_ENABLED: "${PREPROCESSING_WARMUP_ENABLED:-true}"
       PREPROCESSING_DEVICE: "${PREPROCESSING_DEVICE:-cpu}"
       WALLPAPER_SEGMENTATION_DEVICE: "${WALLPAPER_SEGMENTATION_DEVICE:-cpu}"
       MODEL_CACHE_DIRECTORY: /app/models
       OUTPUT_DIRECTORY: /app/outputs
+      PREPARED_GARMENT_DIRECTORY: /app/prepared_garments
       TEMP_DIRECTORY: /app/temp
       LOG_DIRECTORY: /app/logs
     ports:
@@ -56,6 +58,7 @@ services:
       - ./config:/app/config:ro
       - ./inputs:/app/inputs:ro
       - ./outputs:/app/outputs
+      - ./prepared_garments:/app/prepared_garments
       - ./temp:/app/temp
       - ./logs:/app/logs
       - ./models:/app/models

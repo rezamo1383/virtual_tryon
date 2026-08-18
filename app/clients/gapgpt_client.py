@@ -107,7 +107,7 @@ class GapGPTTryOnClient(TryOnAPIClient):
         *,
         base_url: str,
         api_key: str,
-        model: str = "gpt-image-2",
+        model: str = "gpt-image-1.5",
         timeout_seconds: float = 180,
         edit_endpoint: str = "/images/edits",
         image_field_name: str = "image[]",
@@ -159,9 +159,7 @@ class GapGPTTryOnClient(TryOnAPIClient):
 
         source_name = "room.png" if category == "wallpaper" else "person.png"
         reference_name = (
-            "wallpaper-reference.png"
-            if category == "wallpaper"
-            else "garment.png"
+            "wallpaper-reference.png" if category == "wallpaper" else "garment.png"
         )
         files = [
             (
@@ -255,7 +253,7 @@ class GapGPTTryOnClient(TryOnAPIClient):
             raise TryOnAPIError(
                 "GapGPT returned HTTP 404 for the configured image-edit endpoint "
                 f"({self._endpoint}). Confirm that your API plan exposes "
-                "/v1/images/edits for gpt-image-2."
+                f"/v1/images/edits for model '{self._model}'."
             )
         if response.status_code in {402, 403}:
             detail = self._safe_error_message(response)
@@ -326,8 +324,7 @@ class GapGPTTryOnClient(TryOnAPIClient):
                 )
             if response.status_code >= 400:
                 raise TryOnAPIError(
-                    "GapGPT generated-image URL returned HTTP "
-                    f"{response.status_code}."
+                    f"GapGPT generated-image URL returned HTTP {response.status_code}."
                 )
             try:
                 return decode_image_bytes(response.content)
@@ -342,21 +339,15 @@ class GapGPTTryOnClient(TryOnAPIClient):
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").lower()
         if parsed.scheme != "https" or not hostname:
-            raise TryOnAPIError(
-                "GapGPT returned an unsafe generated-image URL."
-            )
+            raise TryOnAPIError("GapGPT returned an unsafe generated-image URL.")
         if hostname == "localhost" or hostname.endswith(".localhost"):
-            raise TryOnAPIError(
-                "GapGPT returned a local generated-image URL."
-            )
+            raise TryOnAPIError("GapGPT returned a local generated-image URL.")
         try:
             address = ipaddress.ip_address(hostname)
         except ValueError:
             return
         if not address.is_global:
-            raise TryOnAPIError(
-                "GapGPT returned a non-public generated-image URL."
-            )
+            raise TryOnAPIError("GapGPT returned a non-public generated-image URL.")
 
     def _privacy_safe_png(self, path: Path) -> bytes:
         stat = path.stat()

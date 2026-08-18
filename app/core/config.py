@@ -36,12 +36,8 @@ class Settings(BaseSettings):
     qwen_validation_retries: int = Field(2, ge=0, le=5)
     use_mock_qwen: bool = True
 
-    analysis_provider: Literal[
-        "auto", "mock", "qwen", "openrouter", "gapgpt"
-    ] = "auto"
-    tryon_provider: Literal[
-        "auto", "mock", "generic", "openrouter", "gapgpt"
-    ] = "auto"
+    analysis_provider: Literal["auto", "mock", "qwen", "openrouter", "gapgpt"] = "auto"
+    tryon_provider: Literal["auto", "mock", "generic", "openrouter", "gapgpt"] = "auto"
 
     openrouter_api_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str = ""
@@ -56,7 +52,7 @@ class Settings(BaseSettings):
     gapgpt_api_base_url: str = "https://api.gapgpt.app/v1"
     gapgpt_api_key: str = ""
     gapgpt_vision_model: str = "gpt-4o"
-    gapgpt_image_model: str = "gpt-image-2"
+    gapgpt_image_model: str = "gpt-image-1.5"
     gapgpt_timeout_seconds: float = Field(180, gt=0)
     gapgpt_image_edit_endpoint: str = "/images/edits"
     gapgpt_image_field_name: Literal["image", "image[]"] = "image[]"
@@ -75,14 +71,13 @@ class Settings(BaseSettings):
 
     candidates_per_color: int = Field(2, ge=1, le=8)
     max_generation_retries: int = Field(1, ge=0, le=5)
+    tryon_mode: Literal["fast", "quality"] = "fast"
     min_acceptance_score: float = Field(0.80, ge=0, le=1)
     wallpaper_min_acceptance_score: float = Field(0.75, ge=0, le=1)
     wallpaper_mask_feather_radius: int = Field(1, ge=0, le=50)
     wallpaper_segmentation_backend: Literal["semantic", "polygon"] = "semantic"
     wallpaper_segmentation_runtime: Literal["onnx", "torch"] = "onnx"
-    wallpaper_segmentation_model: str = (
-        "nvidia/segformer-b2-finetuned-ade-512-512"
-    )
+    wallpaper_segmentation_model: str = "nvidia/segformer-b2-finetuned-ade-512-512"
     wallpaper_segmentation_onnx_url: str = (
         "https://huggingface.co/Xenova/"
         "segformer-b2-finetuned-ade-512-512/resolve/main/onnx/model.onnx"
@@ -142,6 +137,7 @@ class Settings(BaseSettings):
 
     temp_directory: Path = Path("temp")
     output_directory: Path = Path("outputs")
+    prepared_garment_directory: Path = Path("prepared_garments")
     log_directory: Path = Path("logs")
     delete_temp_files: bool = True
 
@@ -184,9 +180,7 @@ class Settings(BaseSettings):
     def safe_model_filename(cls, value: str) -> str:
         filename = Path(value.strip()).name
         if not filename or filename != value.strip():
-            raise ValueError(
-                "Local model filenames must be plain filenames."
-            )
+            raise ValueError("Local model filenames must be plain filenames.")
         return filename
 
     @field_validator("human_parsing_model_sha256")

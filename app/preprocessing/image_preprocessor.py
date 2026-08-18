@@ -204,9 +204,7 @@ class LocalImagePreprocessor:
                     "accepted": False,
                 },
             )
-            raise PersonNotDetectedError(
-                "No person was detected in the person image."
-            )
+            raise PersonNotDetectedError("No person was detected in the person image.")
         replace_mask, preserve_mask = build_clothing_masks(
             foreground_mask=person_bg.mask,
             parsing=parsing,
@@ -235,9 +233,7 @@ class LocalImagePreprocessor:
             cropped_edges=garment_metrics["cropped_edges"],
             component_count=garment_metrics["component_count"],
             min_score=self.settings.min_tryon_suitability_score,
-            background_mask_required=(
-                self.settings.background_removal_enabled
-            ),
+            background_mask_required=(self.settings.background_removal_enabled),
         )
 
         person_result = self._save_person_artifacts(
@@ -292,13 +288,131 @@ class LocalImagePreprocessor:
                 "device": self.device,
                 "elapsed_ms": result.processing_time_ms,
                 "accepted": (
-                    person_validation.accepted
-                    and garment_validation.accepted
+                    person_validation.accepted and garment_validation.accepted
                 ),
                 "degraded_mode": result.degraded_mode,
             },
         )
         return result
+
+    def preprocess_person(
+        self,
+        person_image_path: Path,
+        job_directory: Path,
+        *,
+        human_parsing_enabled: bool | None = None,
+    ) -> PersonPreprocessingResult:
+        """Preprocess only the request-specific person image."""
+
+        job_root = job_directory.resolve(strict=False)
+        self._log_context.job_id = job_root.name
+        artifact_root = self._safe_artifact_path(job_root, Path("preprocessing"))
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        person = self._load_for_inference(person_image_path, "person")
+        person_bg = self._timed(
+            "person_background_removal",
+            lambda: self.background_remover.remove_background(person, "person"),
+            input_size=person.size,
+        )
+        pose, pose_debug = self._timed(
+            "pose_estimation",
+            lambda: self.pose_estimator.estimate(person),
+            input_size=person.size,
+        )
+        presence = None
+        if self.settings.person_presence_check_enabled:
+            presence = self._timed(
+                "person_presence_check",
+                lambda: self.person_detector.detect(person, pose),
+                input_size=person.size,
+            )
+            if not presence.detected:
+                raise PersonNotDetectedError(
+                    "No person was detected in the person image."
+                )
+        parsing_enabled = (
+            self.settings.human_parsing_enabled
+            if human_parsing_enabled is None
+            else human_parsing_enabled
+        )
+        parsing, _ = self._parse_human(
+            person,
+            pose,
+            person_bg.mask,
+            enabled=parsing_enabled,
+        )
+        if (
+            presence is not None
+            and presence.detected
+            and not self.person_detector.has_semantic_human_evidence(parsing)
+        ):
+            raise PersonNotDetectedError("No person was detected in the person image.")
+        replace_mask, preserve_mask = build_clothing_masks(
+            foreground_mask=person_bg.mask,
+            parsing=parsing,
+            pose=pose,
+            morphology_kernel=self.settings.mask_morphology_kernel,
+            dilation_kernel=self.settings.mask_dilation_kernel,
+            dilation_iterations=self.settings.mask_dilation_iterations,
+            feather_radius=self.settings.mask_feather_radius,
+        )
+        validation = validate_person(
+            person,
+            pose,
+            parsing,
+            min_shoulder_visibility=self.settings.min_shoulder_visibility,
+            min_score=self.settings.min_tryon_suitability_score,
+            pose_required=self.settings.pose_estimation_enabled,
+        )
+        return self._save_person_artifacts(
+            artifact_root,
+            person,
+            person_bg.image,
+            person_bg.mask,
+            replace_mask,
+            preserve_mask,
+            pose_debug,
+            parsing,
+            pose,
+            validation,
+        )
+
+    def preprocess_garment(
+        self,
+        garment_image_path: Path,
+        job_directory: Path,
+    ) -> GarmentProcessingResult:
+        """Preprocess only a reusable product garment image."""
+
+        job_root = job_directory.resolve(strict=False)
+        self._log_context.job_id = job_root.name
+        artifact_root = self._safe_artifact_path(job_root, Path("preprocessing"))
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        garment = self._load_for_inference(garment_image_path, "garment")
+        garment_bg = self._timed(
+            "garment_background_removal",
+            lambda: self.background_remover.remove_background(
+                garment,
+                "garment",
+            ),
+            input_size=garment.size,
+        )
+        metrics = self._garment_metrics(garment_bg.image, garment_bg.mask)
+        validation = validate_garment(
+            garment,
+            garment_bg.mask,
+            cropped_edges=metrics["cropped_edges"],
+            component_count=metrics["component_count"],
+            min_score=self.settings.min_tryon_suitability_score,
+            background_mask_required=self.settings.background_removal_enabled,
+        )
+        return self._save_garment_artifacts(
+            artifact_root,
+            garment_bg.image,
+            garment_bg.mask,
+            validation,
+            metrics,
+        )
 
     def _load_for_inference(self, path: Path, subject: str) -> Image.Image:
         try:
@@ -339,9 +453,7 @@ class LocalImagePreprocessor:
                     raise HumanParsingError(
                         f"Required human parsing failed: {exc}"
                     ) from exc
-                warning = (
-                    "Human parsing unavailable; pose/foreground fallback used."
-                )
+                warning = "Human parsing unavailable; pose/foreground fallback used."
         else:
             warning = "Human parsing is disabled; pose/foreground fallback used."
         fallback = HeuristicHumanParser(
@@ -569,17 +681,11 @@ class LocalImagePreprocessor:
         output_image = getattr(result, "image", None)
         if isinstance(result, tuple):
             output_image = next(
-                (
-                    item
-                    for item in result
-                    if isinstance(item, Image.Image)
-                ),
+                (item for item in result if isinstance(item, Image.Image)),
                 None,
             )
         output_size = (
-            output_image.size
-            if isinstance(output_image, Image.Image)
-            else input_size
+            output_image.size if isinstance(output_image, Image.Image) else input_size
         )
         model_name = getattr(result, "model_name", None)
         LOGGER.info(

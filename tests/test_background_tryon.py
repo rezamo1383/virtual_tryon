@@ -34,6 +34,7 @@ class BlockingMultiClient(TryOnAPIClient):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.calls = 0
+        self.candidate_counts: list[int] = []
 
     async def generate(
         self,
@@ -59,6 +60,7 @@ class BlockingMultiClient(TryOnAPIClient):
         options: dict[str, Any],
     ) -> list[bytes]:
         self.calls += 1
+        self.candidate_counts.append(int(options["candidate_count"]))
         self.started.set()
         await self.release.wait()
         return [_png_bytes((1, 2, 3))]
@@ -74,6 +76,7 @@ class FailingMultiClient(BlockingMultiClient):
         options: dict[str, Any],
     ) -> list[bytes]:
         self.calls += 1
+        self.candidate_counts.append(int(options["candidate_count"]))
         self.started.set()
         raise TryOnAPIError("provider secret diagnostic")
 
@@ -111,8 +114,8 @@ async def _post_multi(
         ],
         data={
             "garment_types": json.dumps(["T-shirt", "Pants"]),
-            "candidates_per_color": "1",
-            "max_retries": "0",
+            "candidates_per_color": "8",
+            "max_retries": "5",
         },
     )
 
@@ -146,7 +149,14 @@ async def test_tryon_returns_202_before_generation_and_cleans_inputs(
         provider.release.set()
         await application.state.background_tryon_jobs.wait_all()
         assert provider.calls == 1
+        assert provider.candidate_counts == [1]
         assert not input_directory.exists()
+
+        request_data = json.loads(
+            (settings.output_directory / job_id / "request.json").read_text("utf-8")
+        )
+        assert request_data["candidates_per_color"] == 1
+        assert request_data["max_retries"] == 0
 
         completed = await http_client.get(f"/api/v1/jobs/{job_id}")
         assert completed.json()["status"] == "completed"

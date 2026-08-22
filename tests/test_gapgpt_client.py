@@ -233,6 +233,67 @@ async def test_gapgpt_multi_garment_uses_one_post_with_all_images(
 
 
 @pytest.mark.asyncio
+async def test_gapgpt_paid_single_generation_is_not_automatically_retried(
+    tmp_path: Path,
+) -> None:
+    person = tmp_path / "person.png"
+    garment = tmp_path / "garment.png"
+    person.write_bytes(_png_bytes())
+    garment.write_bytes(_png_bytes())
+    post_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(503, json={"error": {"message": "temporary"}})
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GapGPTTryOnClient(
+        base_url="https://api.gapgpt.app/v1",
+        api_key="gap-key",
+        http_client=http_client,
+    )
+    with pytest.raises(TryOnAPIError, match="without automatic retry"):
+        await client.generate(person, garment, "upper_body", {})
+    assert post_count == 1
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gapgpt_paid_multi_generation_is_not_automatically_retried(
+    tmp_path: Path,
+) -> None:
+    person = tmp_path / "person.png"
+    tshirt = tmp_path / "tshirt.png"
+    pants = tmp_path / "pants.png"
+    for path in (person, tshirt, pants):
+        path.write_bytes(_png_bytes())
+    post_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(429, json={"error": {"message": "rate limited"}})
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GapGPTTryOnClient(
+        base_url="https://api.gapgpt.app/v1",
+        api_key="gap-key",
+        http_client=http_client,
+    )
+    with pytest.raises(TryOnAPIError, match="without automatic retry"):
+        await client.generate_multi(
+            person,
+            [tshirt, pants],
+            ["T-shirt", "Pants"],
+            "complete_outfit",
+            {"candidate_count": 1},
+        )
+    assert post_count == 1
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_gapgpt_image_edit_accepts_base64_response(tmp_path: Path) -> None:
     person = tmp_path / "person.png"
     garment = tmp_path / "garment.png"

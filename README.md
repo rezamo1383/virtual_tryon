@@ -859,11 +859,100 @@ full request, artifacts, and `results.json` under `outputs/{job_id}/`.
 The lifecycle is `queued -> running -> completed` (or `failed`/`rejected`). The
 existing `GET /api/v1/jobs/{job_id}` and
 `GET /api/v1/results/{job_id}/image` endpoints read the same job storage. No
-polling client, SSE, WebSocket, Redis, Celery, or external worker is included.
+polling client, WebSocket, Redis, Celery, or external worker is included. Job
+status can also be observed through the read-only SSE endpoint described below.
 
 Important: tasks live only in the FastAPI process. An abrupt process or Docker
 restart can lose running jobs. This intentionally simple implementation does not
 provide crash recovery or cross-process task ownership.
+
+### SSE job-status notifications
+
+The public asynchronous flow is:
+
+```text
+POST /api/v1/tryon
+  -> HTTP 202 {"job_id":"job_xxx"}
+
+GET /api/v1/jobs/{job_id}/events
+  -> text/event-stream status notifications
+
+completed
+  -> GET /api/v1/results/{job_id}/image
+```
+
+Subscribe with the same tenant credential used to create the job:
+
+```bash
+curl -N "http://localhost:8200/api/v1/jobs/job_xxx/events" \
+  -H "X-API-Key: tenant-secret" \
+  -H "Accept: text/event-stream"
+```
+
+The current status is sent immediately. Later status events are sent only when
+the persisted status changes:
+
+```text
+event: status
+data: {"job_id":"job_xxx","status":"running"}
+
+event: status
+data: {"job_id":"job_xxx","status":"completed"}
+
+```
+
+During an unchanged non-terminal status, the server sends an SSE comment about
+every 15 seconds to keep proxies and clients from considering the connection
+idle:
+
+```text
+: keep-alive
+
+```
+
+The stream closes immediately after `completed`, `completed_with_failures`,
+`failed`, or `rejected`. It also stops when the client disconnects. The endpoint
+reads the existing `job_state.json`/`results.json` files and never invokes an AI
+provider. Invalid jobs and jobs owned by another tenant both return the same safe
+HTTP 404 response.
+
+Postman test steps:
+
+1. Create a `POST http://localhost:8200/api/v1/tryon` request using the existing
+   multipart form-data fields, and include the tenant API key in `X-API-Key`.
+2. Send the request and copy `job_id` from the HTTP 202 response.
+3. Create a `GET http://localhost:8200/api/v1/jobs/{{job_id}}/events` request.
+   Send the same `X-API-Key` and set `Accept: text/event-stream`.
+4. Press **Send** and keep the response tab open. Postman displays each status
+   event as it arrives; heartbeat comments may appear between status changes.
+5. After the terminal `completed` event closes the stream, request
+   `GET http://localhost:8200/api/v1/results/{{job_id}}/image` with the same API
+   key and use **Send and Download** to save the result.
+
+### Fast-mode generation cost ceiling
+
+The production Fast configuration is:
+
+```env
+TRYON_MODE=fast
+GAPGPT_IMAGE_QUALITY=low
+GAPGPT_IMAGE_SIZE=1024x1024
+```
+
+In Fast mode, generation policy is enforced inside the clothing pipeline for
+both `POST /api/v1/tryon` and
+`POST /api/v1/tryon/products/{product_id}`. Client-supplied candidate and retry
+values cannot raise the cost ceiling: the effective values are always one
+candidate and zero application retries. Output evaluation and ranking are also
+skipped. This applies to single-garment and single-call multi-garment jobs and
+does not change the multipart request contract or background execution model.
+
+Paid GapGPT image-edit POST requests are attempted once. HTTP transport retries
+and application-level retries are disabled for these requests because an
+ambiguous timeout or transient response could otherwise create a second billed
+generation. A provider error fails the current job; intentionally trying again
+requires a new request. Per-job logs include `effective_candidate_count`,
+`effective_retry_count`, and `provider_generation_call_count`.
 
 ## اتصال Qwen API
 

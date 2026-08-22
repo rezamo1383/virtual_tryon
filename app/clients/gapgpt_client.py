@@ -14,12 +14,6 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
 
 from app.clients.qwen_client import OpenAICompatibleQwenClient
 from app.clients.tryon_api_client import TryOnAPIClient
@@ -46,7 +40,7 @@ def _provider_transport() -> httpx.AsyncHTTPTransport:
         if option is not None:
             socket_options.append((socket.IPPROTO_TCP, option, value))
     return httpx.AsyncHTTPTransport(
-        retries=1,
+        retries=0,
         socket_options=socket_options,
     )
 
@@ -92,7 +86,7 @@ class GapGPTVisionClient(OpenAICompatibleQwenClient):
 
 
 class _TransientGapGPTImageError(Exception):
-    """Internal marker for retryable GapGPT image failures."""
+    """Internal marker for a temporary GapGPT image failure."""
 
 
 class GapGPTTryOnClient(TryOnAPIClient):
@@ -191,32 +185,18 @@ class GapGPTTryOnClient(TryOnAPIClient):
             data["size"] = size
 
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential_jitter(initial=1, max=15),
-                retry=retry_if_exception_type(
-                    (
-                        _TransientGapGPTImageError,
-                        httpx.TimeoutException,
-                        httpx.NetworkError,
-                    )
-                ),
-                reraise=True,
-            ):
-                with attempt:
-                    return await self._post(files, data)
+            return await self._post(files, data)
         except TryOnAPIError:
             raise
         except Exception as exc:
             detail = _network_error_detail(exc)
             LOGGER.error(
                 "gapgpt_image_network_failed",
-                extra={"error_type": type(exc).__name__, "error": detail},
+                extra={"error_type": type(exc).__name__, "automatic_retries": 0},
             )
             raise TryOnAPIError(
-                f"GapGPT image request failed after retries: {detail}"
+                f"GapGPT image request failed without automatic retry: {detail}"
             ) from exc
-        raise TryOnAPIError("GapGPT image request failed without a response.")
 
     async def generate_multi(
         self,
@@ -266,32 +246,19 @@ class GapGPTTryOnClient(TryOnAPIClient):
         if size:
             data["size"] = size
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential_jitter(initial=1, max=15),
-                retry=retry_if_exception_type(
-                    (
-                        _TransientGapGPTImageError,
-                        httpx.TimeoutException,
-                        httpx.NetworkError,
-                    )
-                ),
-                reraise=True,
-            ):
-                with attempt:
-                    return await self._post(files, data)
+            return await self._post(files, data)
         except TryOnAPIError:
             raise
         except Exception as exc:
             detail = _network_error_detail(exc)
             LOGGER.error(
                 "gapgpt_multi_image_network_failed",
-                extra={"error_type": type(exc).__name__, "error": detail},
+                extra={"error_type": type(exc).__name__, "automatic_retries": 0},
             )
             raise TryOnAPIError(
-                f"GapGPT multi-image request failed after retries: {detail}"
+                "GapGPT multi-image request failed without automatic retry: "
+                f"{detail}"
             ) from exc
-        raise TryOnAPIError("GapGPT multi-image request failed without a response.")
 
     def _resolved_size(self, source_image: Path, category: str) -> str:
         if category != "wallpaper":

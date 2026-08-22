@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from api import create_app
+from app.clients.mock_tryon_client import MockTryOnClient
 from app.clients.tryon_api_client import TryOnAPIClient
 from app.core.config import Settings
 from app.core.exceptions import TryOnAPIError
@@ -39,6 +40,28 @@ class FailingGenerationClient(TryOnAPIClient):
         options: dict[str, Any],
     ) -> list[bytes]:
         raise TryOnAPIError("provider secret diagnostic")
+
+
+class CountingGenerationClient(MockTryOnClient):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.candidate_counts: list[int] = []
+
+    async def generate(
+        self,
+        person_image: Path,
+        garment_image: Path,
+        category: str,
+        options: dict[str, Any],
+    ) -> list[bytes]:
+        self.calls += 1
+        self.candidate_counts.append(int(options["candidate_count"]))
+        return await super().generate(
+            person_image,
+            garment_image,
+            category,
+            options,
+        )
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -120,6 +143,13 @@ async def test_successful_product_tryon_and_generated_image_retrieval(
     settings = _settings(tmp_path)
     _store_product(settings, garment)
     application = create_app(settings)
+    generator = CountingGenerationClient()
+    legacy = build_pipeline(settings, tryon_client=generator)
+    application.state.pipeline = legacy
+    application.state.runtime = build_runtime(
+        settings,
+        legacy_pipeline=legacy,
+    )
     transport = httpx.ASGITransport(app=application)
 
     async with httpx.AsyncClient(
@@ -162,6 +192,8 @@ async def test_successful_product_tryon_and_generated_image_retrieval(
     assert image_response.headers["content-type"].startswith("image/png")
     assert image_response.headers["x-content-type-options"] == "nosniff"
     assert image_response.content.startswith(b"\x89PNG")
+    assert generator.calls == 1
+    assert generator.candidate_counts == [1]
 
 
 @pytest.mark.asyncio

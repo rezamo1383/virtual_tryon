@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -44,6 +46,71 @@ class UnsuitableMockQwenClient(MockQwenClient):
 class PersonAnalysisMustNotRunClient(MockQwenClient):
     async def analyze_person(self, image_path: Path) -> PersonAnalysis:
         raise AssertionError("Person analysis must be disabled")
+
+
+class EvaluationMustNotRunClient(MockQwenClient):
+    async def evaluate_output(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Fast mode must not evaluate generated images")
+
+
+class CostCountingTryOnClient(MockTryOnClient):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.candidate_counts: list[int] = []
+
+    async def generate(
+        self,
+        person_image: Path,
+        garment_image: Path,
+        category: str,
+        options: dict[str, Any],
+    ) -> list[bytes]:
+        self.calls += 1
+        self.candidate_counts.append(int(options["candidate_count"]))
+        return await super().generate(
+            person_image,
+            garment_image,
+            category,
+            options,
+        )
+
+
+@pytest.mark.asyncio
+async def test_fast_mode_forces_one_call_without_evaluation_or_retry(
+    settings: Settings,
+    valid_images: tuple[Path, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    person, garment = valid_images
+    generator = CostCountingTryOnClient()
+    pipeline = VirtualTryOnPipeline(
+        settings=settings.model_copy(update={"tryon_mode": "fast"}),
+        qwen_client=EvaluationMustNotRunClient(),
+        tryon_client=generator,
+    )
+
+    result = await pipeline.run(
+        TryOnRequest(
+            person_image=person,
+            garment_image=garment,
+            candidates_per_color=8,
+            max_retries=5,
+        )
+    )
+
+    assert generator.calls == 1
+    assert generator.candidate_counts == [1]
+    assert result.results[0].candidates_evaluated == 1
+    assert result.results[0].retry_count == 0
+    summary = next(
+        record
+        for record in caplog.records
+        if record.message == "tryon_generation_summary"
+    )
+    assert summary.effective_candidate_count == 1
+    assert summary.effective_retry_count == 0
+    assert summary.provider_generation_call_count == 1
 
 
 @pytest.mark.asyncio

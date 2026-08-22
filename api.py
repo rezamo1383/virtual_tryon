@@ -13,7 +13,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -53,6 +53,7 @@ from app.services.multi_garment_tryon import (
 )
 from app.services.background_tryon import InProcessTryOnJobs
 from app.services.input_validator import InputValidator
+from app.services.job_events import JobEventStreamer
 from app.services.pipeline import VirtualTryOnPipeline, build_pipeline
 from app.tenant.models import TenantConfig
 from app.utils.file_utils import ensure_within, secure_temp_name
@@ -96,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = effective_settings
+    application.state.job_event_streamer = JobEventStreamer()
 
     @application.exception_handler(AIPlatformError)
     async def platform_error_handler(
@@ -614,6 +616,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "completed_at": data.get("completed_at"),
         }
 
+    @application.get(
+        "/api/v1/jobs/{job_id}/events",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "Tenant-owned job status event stream.",
+                "content": {"text/event-stream": {}},
+            },
+            404: {"model": ErrorResponse},
+        },
+    )
+    async def job_events(job_id: str, request: Request) -> StreamingResponse:
+        """Stream persisted status changes until the job becomes terminal."""
+
+        runtime = _runtime_for_request(request)
+        tenant = _resolve_tenant(request, runtime)
+        current: Settings = request.app.state.settings
+        initial = _load_job(job_id, current, tenant=tenant)
+        initial_status = initial.get("status")
+        if not isinstance(initial_status, str) or not initial_status:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        streamer = _job_event_streamer(request)
+        events = streamer.stream(
+            request=request,
+            job_id=job_id,
+            initial_status=initial_status,
+            load_state=lambda: _load_job(job_id, current, tenant=tenant),
+        )
+        return StreamingResponse(
+            events,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
     @application.get("/api/v1/jobs/{job_id}/results")
     async def job_results(
         job_id: str,
@@ -704,6 +745,15 @@ def _background_jobs(
     manager = InProcessTryOnJobs(settings, runtime)
     request.app.state.background_tryon_jobs = manager
     return manager
+
+
+def _job_event_streamer(request: Request) -> JobEventStreamer:
+    streamer = getattr(request.app.state, "job_event_streamer", None)
+    if isinstance(streamer, JobEventStreamer):
+        return streamer
+    streamer = JobEventStreamer()
+    request.app.state.job_event_streamer = streamer
+    return streamer
 
 
 def _resolve_tenant(

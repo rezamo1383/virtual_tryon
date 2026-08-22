@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.config import Settings
-from app.models.request_models import TryOnMode
+from app.models.request_models import ClothingOptions, TryOnMode, TryOnRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,4 +32,22 @@ class GenerationPolicy:
             candidates=settings.candidates_per_color,
             max_retries=settings.max_generation_retries,
             evaluate_outputs=True,
+        )
+
+    def apply_to_options(self, options: ClothingOptions) -> ClothingOptions:
+        """Force the cost ceiling in Fast mode and preserve Quality inputs."""
+
+        if self.mode is not TryOnMode.FAST:
+            return options
+        return options.model_copy(
+            update={"candidates_per_color": 1, "max_retries": 0}
+        )
+
+    def apply_to_request(self, request: TryOnRequest) -> TryOnRequest:
+        """Force the same Fast policy on the legacy single-garment request."""
+
+        if self.mode is not TryOnMode.FAST:
+            return request
+        return request.model_copy(
+            update={"candidates_per_color": 1, "max_retries": 0}
         )

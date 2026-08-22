@@ -474,7 +474,8 @@ async def test_tryon_api_applies_all_labeled_garments_in_one_stage(
     assert request_data["generation_strategy"] == "single_call_multi_reference"
     assert request_data["garment_types"] == ["T-shirt", "Watch"]
     assert len(request_data["garment_images"]) == 2
-    assert request_data["candidates_per_color"] == 2
+    assert request_data["candidates_per_color"] == 1
+    assert request_data["max_retries"] == 0
     stored_result = json.loads(
         (
             settings.output_directory

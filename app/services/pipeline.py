@@ -16,6 +16,7 @@ from app.clients.tryon_api_client import TryOnAPIClient
 from app.core.config import Settings
 from app.core.exceptions import InputValidationError
 from app.models.request_models import (
+    ClothingOptions,
     ORIGINAL_GARMENT_COLOR,
     PreparedTryOnRequest,
     TryOnRequest,
@@ -35,7 +36,7 @@ from app.services.output_manager import OutputManager
 from app.services.person_analyzer import PersonAnalyzer
 from app.services.result_selector import ResultSelector
 from app.services.retry_manager import RetryManager
-from app.services.tryon_service import TryOnService
+from app.services.tryon_service import ProviderCallCounter, TryOnService
 from app.repositories.prepared_garments import (
     FilesystemPreparedGarmentRepository,
     PreparedGarmentRepository,
@@ -137,6 +138,19 @@ class VirtualTryOnPipeline:
         person_preprocessing = None
         prepared = None
         status = "failed"
+        retry_count = 0
+        provider_calls = ProviderCallCounter()
+        LOGGER.info(
+            "tryon_generation_policy",
+            extra={
+                "job_id": job_id,
+                "mode": policy.mode.value,
+                "effective_candidate_count": policy.candidates,
+                "effective_max_retries": policy.max_retries,
+                "evaluation_enabled": policy.evaluate_outputs,
+                "ranking_enabled": policy.evaluate_outputs,
+            },
+        )
         try:
             with timed_stage(
                 LOGGER,
@@ -217,7 +231,6 @@ class VirtualTryOnPipeline:
                     )
 
             candidates: list[CandidateResult] = []
-            retry_count = 0
             with timed_stage(
                 LOGGER,
                 pipeline="prepared_clothing",
@@ -226,7 +239,7 @@ class VirtualTryOnPipeline:
                 mode=policy.mode.value,
             ):
                 while True:
-                    generated = await self.tryon_service.generate_candidates(
+                    batch = await self.tryon_service.generate_candidates(
                         person_image=processing_person,
                         garment_image=variant_path,
                         category=request.category.value,
@@ -241,7 +254,10 @@ class VirtualTryOnPipeline:
                             base_options,
                             retry_count,
                         ),
+                        job_id=job_id,
+                        call_counter=provider_calls,
                     )
+                    generated = batch.candidates
                     candidates.extend(generated)
                     if not policy.evaluate_outputs:
                         best = generated[0]
@@ -347,6 +363,9 @@ class VirtualTryOnPipeline:
                 status=status,
                 job_id=job_id,
                 mode=policy.mode.value,
+                effective_candidate_count=policy.candidates,
+                effective_retry_count=retry_count,
+                provider_generation_call_count=provider_calls.count,
             )
             if self.settings.delete_temp_files:
                 remove_tree(temp_directory, self.settings.temp_directory)
@@ -360,7 +379,8 @@ class VirtualTryOnPipeline:
         """Execute one complete job and return its durable result."""
 
         started_at = datetime.now(UTC)
-        validated = self.validator.validate(request)
+        policy = GenerationPolicy.from_settings(self.settings)
+        validated = self.validator.validate(policy.apply_to_request(request))
         job_id = job_id or create_job_id()
         job_directory = self._claim_job_directory(job_id)
         temp_directory = self.settings.temp_directory / "pipeline" / job_id
@@ -372,13 +392,19 @@ class VirtualTryOnPipeline:
                 "job_id": job_id,
                 "stage": "validate",
                 "colors": len(validated.colors),
-                "candidates_per_color": validated.candidates_per_color,
+                "effective_candidate_count": validated.candidates_per_color,
+                "effective_max_retries": validated.max_retries,
+                "evaluation_enabled": policy.evaluate_outputs,
+                "ranking_enabled": policy.evaluate_outputs,
+                "mode": policy.mode.value,
             },
         )
         person_analysis = None
         garment_analysis = None
         preprocessing = None
         processing_request = validated
+        provider_calls = ProviderCallCounter()
+        effective_retry_count = 0
         try:
             if self.settings.local_preprocessing_enabled:
                 try:
@@ -529,9 +555,12 @@ class VirtualTryOnPipeline:
                     color=canonical,
                     slug=slug,
                     preprocessing=preprocessing,
+                    policy=policy,
+                    call_counter=provider_calls,
                 )
                 color_results.append(result)
                 all_candidates.extend(candidates)
+                effective_retry_count += result.retry_count
 
             self.output_manager.write_candidate_metadata(job_directory, all_candidates)
             status = (
@@ -558,8 +587,12 @@ class VirtualTryOnPipeline:
                     "job_id": job_id,
                     "stage": "complete",
                     "status": status,
-                    "candidate_count": len(all_candidates),
-                    "retry_count": sum(item.retry_count for item in color_results),
+                    "effective_candidate_count": validated.candidates_per_color,
+                    "effective_retry_count": effective_retry_count,
+                    "provider_generation_call_count": (
+                        provider_calls.count
+                    ),
+                    "mode": policy.mode.value,
                 },
             )
             return result
@@ -594,6 +627,18 @@ class VirtualTryOnPipeline:
             )
             raise
         finally:
+            LOGGER.info(
+                "tryon_generation_summary",
+                extra={
+                    "job_id": job_id,
+                    "mode": policy.mode.value,
+                    "effective_candidate_count": validated.candidates_per_color,
+                    "effective_retry_count": effective_retry_count,
+                    "provider_generation_call_count": (
+                        provider_calls.count
+                    ),
+                },
+            )
             if self.settings.delete_temp_files:
                 remove_tree(temp_directory, self.settings.temp_directory)
 
@@ -603,7 +648,7 @@ class VirtualTryOnPipeline:
         person_image: Path,
         garment_images: list[Path],
         garment_types: list[str],
-        options: Any,
+        options: ClothingOptions,
         job_id: str | None = None,
     ) -> TryOnJobResult:
         """Generate a complete multi-garment outfit with one provider call."""
@@ -623,6 +668,8 @@ class VirtualTryOnPipeline:
             )
 
         started_at = datetime.now(UTC)
+        policy = GenerationPolicy.from_settings(self.settings)
+        options = policy.apply_to_options(options)
         validated_person = self.validator.validate_image(person_image, role="person")
         validated_garments = [
             self.validator.validate_image(path, role=f"garment {index}")
@@ -650,6 +697,18 @@ class VirtualTryOnPipeline:
         preprocessing = None
         processing_person = validated_person
         processing_garments = list(validated_garments)
+        provider_calls = ProviderCallCounter()
+        LOGGER.info(
+            "tryon_generation_policy",
+            extra={
+                "job_id": job_id,
+                "mode": policy.mode.value,
+                "effective_candidate_count": options.candidates_per_color,
+                "effective_max_retries": options.max_retries,
+                "evaluation_enabled": False,
+                "ranking_enabled": False,
+            },
+        )
         try:
             if self.settings.local_preprocessing_enabled:
                 try:
@@ -749,7 +808,7 @@ class VirtualTryOnPipeline:
                 )
 
             generation_started = time.perf_counter()
-            candidates = await self.tryon_service.generate_multi_candidates(
+            batch = await self.tryon_service.generate_multi_candidates(
                 person_image=processing_person,
                 garment_images=processing_garments,
                 garment_types=garment_types,
@@ -760,7 +819,10 @@ class VirtualTryOnPipeline:
                 ),
                 count=options.candidates_per_color,
                 options=provider_options,
+                job_id=job_id,
+                call_counter=provider_calls,
             )
+            candidates = batch.candidates
             log_stage_timing(
                 LOGGER,
                 pipeline="clothing",
@@ -768,7 +830,10 @@ class VirtualTryOnPipeline:
                 started=generation_started,
                 job_id=job_id,
                 garment_count=len(garment_images),
-                provider_calls=1,
+                provider_generation_call_count=provider_calls.count,
+                effective_candidate_count=options.candidates_per_color,
+                effective_retry_count=0,
+                mode=policy.mode.value,
             )
             best = candidates[0]
             final_path = job_directory / "final" / "original.png"
@@ -801,7 +866,12 @@ class VirtualTryOnPipeline:
                 extra={
                     "job_id": job_id,
                     "garment_count": len(garment_images),
-                    "provider_calls": 1,
+                    "mode": policy.mode.value,
+                    "effective_candidate_count": options.candidates_per_color,
+                    "effective_retry_count": 0,
+                    "provider_generation_call_count": (
+                        provider_calls.count
+                    ),
                 },
             )
             return result
@@ -819,6 +889,18 @@ class VirtualTryOnPipeline:
             self.output_manager.write_result(job_directory, failure)
             raise
         finally:
+            LOGGER.info(
+                "tryon_generation_summary",
+                extra={
+                    "job_id": job_id,
+                    "mode": policy.mode.value,
+                    "effective_candidate_count": options.candidates_per_color,
+                    "effective_retry_count": 0,
+                    "provider_generation_call_count": (
+                        provider_calls.count
+                    ),
+                },
+            )
             if self.settings.delete_temp_files:
                 remove_tree(temp_directory, self.settings.temp_directory)
 
@@ -867,6 +949,8 @@ class VirtualTryOnPipeline:
         color: str,
         slug: str,
         preprocessing: PreprocessingResult | None,
+        policy: GenerationPolicy,
+        call_counter: ProviderCallCounter,
     ) -> tuple[ColorResult, list[CandidateResult]]:
         base_options: dict[str, Any] = {
             "product_title": request.product_title,
@@ -889,7 +973,7 @@ class VirtualTryOnPipeline:
         retry_count = 0
         while True:
             options = self.retry_manager.options_for_attempt(base_options, retry_count)
-            generated = await self.tryon_service.generate_candidates(
+            batch = await self.tryon_service.generate_candidates(
                 person_image=request.person_image,
                 garment_image=variant_path,
                 category=category,
@@ -899,7 +983,18 @@ class VirtualTryOnPipeline:
                 attempt=retry_count,
                 start_index=len(candidates) + 1,
                 options=options,
+                job_id=job_id,
+                call_counter=call_counter,
             )
+            generated = batch.candidates
+            candidates.extend(generated)
+            if not policy.evaluate_outputs:
+                best = generated[0]
+                accepted = True
+                score = 1.0
+                problems: list[str] = []
+                break
+
             for candidate in generated:
                 candidate.evaluation = await self.evaluator.evaluate(
                     request.person_image,
@@ -918,12 +1013,16 @@ class VirtualTryOnPipeline:
                         "accepted": candidate.evaluation.accepted,
                     },
                 )
-            candidates.extend(generated)
             best = self.selector.select_best(candidates)
             accepted = self.selector.is_accepted(best)
             if not self.retry_manager.should_retry(
                 accepted, retry_count, request.max_retries
             ):
+                evaluation = best.evaluation
+                if evaluation is None:  # pragma: no cover
+                    raise RuntimeError("Evaluated candidate has no score.")
+                score = evaluation.overall_score
+                problems = evaluation.problems
                 break
             retry_count += 1
             LOGGER.info(
@@ -935,8 +1034,6 @@ class VirtualTryOnPipeline:
                 },
             )
 
-        if best.evaluation is None:
-            raise RuntimeError("Best candidate unexpectedly has no evaluation.")
         final_path = job_directory / "final" / f"{slug}.png"
         final_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(best.path, final_path)
@@ -947,7 +1044,7 @@ class VirtualTryOnPipeline:
                 "job_id": job_id,
                 "color": color,
                 "candidate_index": best.candidate_index,
-                "score": best.evaluation.overall_score,
+                "score": score,
                 "accepted": accepted,
             },
         )
@@ -955,11 +1052,11 @@ class VirtualTryOnPipeline:
             ColorResult(
                 color=color,
                 output=relative_output,
-                score=best.evaluation.overall_score,
+                score=score,
                 accepted=accepted,
                 retry_count=retry_count,
                 candidates_evaluated=len(candidates),
-                problems=best.evaluation.problems,
+                problems=problems,
             ),
             candidates,
         )

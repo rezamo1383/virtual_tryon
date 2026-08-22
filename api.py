@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ValidationError
@@ -34,11 +34,13 @@ from app.models.request_models import (
     GarmentCategory,
     GenerationRequest,
     PreparedTryOnRequest,
+    TryOnRequest,
 )
 from app.models.api_models import (
     ErrorResponse,
     ProductPreparationResponse,
     ProductTryOnResponse,
+    TryOnJobResponse,
 )
 from app.pipelines.clothing import ClothingPipeline
 from app.preprocessing.preprocessing_exceptions import (
@@ -48,8 +50,9 @@ from app.preprocessing.preprocessing_exceptions import (
 from app.preprocessing.preprocessing_models import PreprocessingResult
 from app.services.multi_garment_tryon import (
     LabeledGarment,
-    run_multi_garment_tryon,
 )
+from app.services.background_tryon import InProcessTryOnJobs
+from app.services.input_validator import InputValidator
 from app.services.pipeline import VirtualTryOnPipeline, build_pipeline
 from app.tenant.models import TenantConfig
 from app.utils.file_utils import ensure_within, secure_temp_name
@@ -81,7 +84,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         instance.state.pipeline = legacy_pipeline
         instance.state.runtime = runtime
+        background_jobs = InProcessTryOnJobs(effective_settings, runtime)
+        instance.state.background_tryon_jobs = background_jobs
         yield
+        await background_jobs.shutdown()
         await runtime.aclose()
 
     application = FastAPI(
@@ -251,7 +257,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             shutil.rmtree(upload_directory, ignore_errors=True)
 
-    @application.post("/api/v1/tryon")
+    @application.post(
+        "/api/v1/tryon",
+        response_model=TryOnJobResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
     async def tryon(
         request: Request,
         person_image: UploadFile = File(...),
@@ -265,7 +275,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         preserve_face: bool = Form(True),
         preserve_pose: bool = Form(True),
         preserve_background: bool = Form(True),
-    ) -> dict[str, object]:
+    ) -> TryOnJobResponse:
         """Apply one or more labeled garment references to a person."""
 
         current: Settings = request.app.state.settings
@@ -275,6 +285,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise PipelineRoutingError(
                 "The try-on endpoint requires a clothing tenant."
             )
+        job_id = create_job_id()
         uploads = list(garment_images or [])
         if garment_image is not None:
             if uploads:
@@ -299,7 +310,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Multi-garment try-on currently preserves original colors only."
             )
 
-        upload_directory = _create_upload_directory(current)
+        upload_directory = (
+            current.temp_directory / "background_uploads" / job_id
+        )
+        upload_directory.mkdir(parents=True, exist_ok=False)
         try:
             person_path = await _save_upload(
                 person_image,
@@ -314,33 +328,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 for upload in uploads
             ]
-            multi_result = await run_multi_garment_tryon(
-                runtime=runtime,
+            validator = InputValidator(current)
+            options = ClothingOptions(
+                colors=parsed_colors,
+                candidates_per_color=candidates_per_color,
+                max_retries=max_retries,
+                preserve_face=preserve_face,
+                preserve_pose=preserve_pose,
+                preserve_background=preserve_background,
+            )
+            primary = validator.validate(
+                TryOnRequest(
+                    person_image=person_path,
+                    garment_image=garment_paths[0],
+                    **options.model_dump(),
+                )
+            )
+            person_path = primary.person_image
+            garment_paths[0] = primary.garment_image
+            garment_paths = [
+                (
+                    path
+                    if index == 1
+                    else validator.validate_image(path, role=f"garment {index}")
+                )
+                for index, path in enumerate(garment_paths, start=1)
+            ]
+            garments = [
+                LabeledGarment(path, label)
+                for path, label in zip(
+                    garment_paths,
+                    labels,
+                    strict=True,
+                )
+            ]
+            _background_jobs(request, runtime, current).submit(
+                job_id=job_id,
                 tenant=tenant,
                 person_image=person_path,
-                garments=[
-                    LabeledGarment(path, label)
-                    for path, label in zip(
-                        garment_paths,
-                        labels,
-                        strict=True,
-                    )
-                ],
-                options=ClothingOptions(
-                    colors=parsed_colors,
-                    candidates_per_color=candidates_per_color,
-                    max_retries=max_retries,
-                    preserve_face=preserve_face,
-                    preserve_pose=preserve_pose,
-                    preserve_background=preserve_background,
-                ),
+                garments=garments,
+                options=options,
+                input_directory=upload_directory,
             )
-            response = _model_response(multi_result.result)
-            response["applied_items"] = list(multi_result.applied_items)
-            response["stage_job_ids"] = list(multi_result.stage_job_ids)
-            return response
-        finally:
+        except Exception:
             shutil.rmtree(upload_directory, ignore_errors=True)
+            raise
+        return TryOnJobResponse(job_id=job_id)
 
     @application.post(
         "/api/v1/products/{product_id}/garment",
@@ -660,6 +693,19 @@ def _runtime_for_request(request: Request) -> PlatformRuntime:
     return runtime
 
 
+def _background_jobs(
+    request: Request,
+    runtime: PlatformRuntime,
+    settings: Settings,
+) -> InProcessTryOnJobs:
+    manager = getattr(request.app.state, "background_tryon_jobs", None)
+    if isinstance(manager, InProcessTryOnJobs):
+        return manager
+    manager = InProcessTryOnJobs(settings, runtime)
+    request.app.state.background_tryon_jobs = manager
+    return manager
+
+
 def _resolve_tenant(
     request: Request,
     runtime: PlatformRuntime,
@@ -781,9 +827,17 @@ def _load_job(
         settings.output_directory,
     )
     result_path = job_directory / "results.json"
-    if not result_path.is_file():
+    state_path = job_directory / "job_state.json"
+    state = read_json(state_path) if state_path.is_file() else {}
+    if result_path.is_file():
+        data = read_json(result_path)
+        if state:
+            data.setdefault("tenant_id", state.get("tenant_id"))
+            data.setdefault("pipeline", state.get("pipeline"))
+    elif state:
+        data = state
+    else:
         raise HTTPException(status_code=404, detail="Job not found")
-    data = read_json(result_path)
     owner = data.get("tenant_id")
     if owner is None and settings.tenant_auth_required:
         raise HTTPException(status_code=404, detail="Job not found")

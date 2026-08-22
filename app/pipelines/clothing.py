@@ -42,7 +42,35 @@ class ClothingPipeline(BasePipeline):
                 **options.model_dump(),
             )
         )
-        result = await self.engine.run(legacy)
+        result = await self.engine.run(legacy, job_id=request.job_id)
+        routed = result.model_copy(
+            update={
+                "tenant_id": self.tenant_id,
+                "pipeline": self.pipeline_name,
+            }
+        )
+        job_directory = self.engine.settings.output_directory / result.job_id
+        self.engine.output_manager.write_result(job_directory, routed)
+        return routed
+
+    async def run_multi(
+        self,
+        *,
+        person_image: Path,
+        garment_images: list[Path],
+        garment_types: list[str],
+        options: ClothingOptions,
+        job_id: str | None = None,
+    ) -> TryOnJobResult:
+        """Run a complete outfit through one multi-reference generation call."""
+
+        result = await self.engine.run_multi(
+            person_image=person_image,
+            garment_images=garment_images,
+            garment_types=garment_types,
+            options=options,
+            job_id=job_id,
+        )
         routed = result.model_copy(
             update={
                 "tenant_id": self.tenant_id,

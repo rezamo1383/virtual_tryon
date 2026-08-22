@@ -67,6 +67,7 @@ class GenerationRequest(BaseModel):
 
     source_image: Path
     reference_image: Path
+    job_id: str | None = Field(default=None, exclude=True)
     options: dict[str, Any] = Field(default_factory=dict)
 
 

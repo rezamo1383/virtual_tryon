@@ -34,6 +34,7 @@ class TryOnAPIClient(ABC):
 
     supports_mask: bool = False
     supports_text_prompt: bool = False
+    supports_multi_reference: bool = False
 
     @abstractmethod
     async def generate(
@@ -44,6 +45,28 @@ class TryOnAPIClient(ABC):
         options: dict[str, Any],
     ) -> list[bytes]:
         """Generate one or more image candidates."""
+
+    async def generate_multi(
+        self,
+        person_image: Path,
+        garment_images: list[Path],
+        garment_types: list[str],
+        category: str,
+        options: dict[str, Any],
+    ) -> list[bytes]:
+        """Generate from one person and multiple independent references."""
+
+        if len(garment_images) == 1 and len(garment_types) == 1:
+            return await self.generate(
+                person_image,
+                garment_images[0],
+                category,
+                {**options, "garment_types": garment_types},
+            )
+        raise TryOnAPIError(
+            "The configured generation provider does not support multiple "
+            "garment references in one request."
+        )
 
     async def aclose(self) -> None:
         """Release owned network resources, if any."""

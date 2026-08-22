@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import time
 from datetime import UTC, datetime
@@ -350,14 +351,19 @@ class VirtualTryOnPipeline:
             if self.settings.delete_temp_files:
                 remove_tree(temp_directory, self.settings.temp_directory)
 
-    async def run(self, request: TryOnRequest) -> TryOnJobResult:
+    async def run(
+        self,
+        request: TryOnRequest,
+        *,
+        job_id: str | None = None,
+    ) -> TryOnJobResult:
         """Execute one complete job and return its durable result."""
 
         started_at = datetime.now(UTC)
         validated = self.validator.validate(request)
-        job_id = create_job_id()
-        job_directory = self.output_manager.create_job_directory(job_id)
-        temp_directory = self.settings.temp_directory / job_id
+        job_id = job_id or create_job_id()
+        job_directory = self._claim_job_directory(job_id)
+        temp_directory = self.settings.temp_directory / "pipeline" / job_id
         temp_directory.mkdir(parents=True, exist_ok=False)
         self.output_manager.write_request(job_directory, validated)
         LOGGER.info(
@@ -578,24 +584,277 @@ class VirtualTryOnPipeline:
                     extra={"job_id": job_id},
                     exc_info=LOGGER.isEnabledFor(logging.DEBUG),
                 )
-            if LOGGER.isEnabledFor(logging.DEBUG):
-                LOGGER.exception(
-                    "job_failed", extra={"job_id": job_id, "stage": "pipeline"}
-                )
-            else:
-                LOGGER.error(
-                    "job_failed",
-                    extra={
-                        "job_id": job_id,
-                        "stage": "pipeline",
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
+            LOGGER.error(
+                "job_failed",
+                extra={
+                    "job_id": job_id,
+                    "stage": "pipeline",
+                    "error_type": type(exc).__name__,
+                },
+            )
             raise
         finally:
             if self.settings.delete_temp_files:
                 remove_tree(temp_directory, self.settings.temp_directory)
+
+    async def run_multi(
+        self,
+        *,
+        person_image: Path,
+        garment_images: list[Path],
+        garment_types: list[str],
+        options: Any,
+        job_id: str | None = None,
+    ) -> TryOnJobResult:
+        """Generate a complete multi-garment outfit with one provider call."""
+
+        if len(garment_images) < 2:
+            raise InputValidationError(
+                "Single-call multi-garment generation requires at least two garments."
+            )
+        if len(garment_images) != len(garment_types):
+            raise InputValidationError(
+                "Every garment image requires one positional garment type."
+            )
+        if not self.tryon_client.supports_multi_reference:
+            raise InputValidationError(
+                "The configured generation provider does not support multiple "
+                "garment references in one request."
+            )
+
+        started_at = datetime.now(UTC)
+        validated_person = self.validator.validate_image(person_image, role="person")
+        validated_garments = [
+            self.validator.validate_image(path, role=f"garment {index}")
+            for index, path in enumerate(garment_images, start=1)
+        ]
+        if any(path == validated_person for path in validated_garments):
+            raise InputValidationError(
+                "Person and garment images must be distinct files."
+            )
+
+        job_id = job_id or create_job_id()
+        job_directory = self._claim_job_directory(job_id)
+        temp_directory = self.settings.temp_directory / "pipeline" / job_id
+        temp_directory.mkdir(parents=True, exist_ok=False)
+        self.output_manager.write_request(
+            job_directory,
+            {
+                "person_image": str(validated_person),
+                "garment_images": [str(path) for path in validated_garments],
+                "garment_types": garment_types,
+                **options.model_dump(mode="json"),
+                "generation_strategy": "single_call_multi_reference",
+            },
+        )
+        preprocessing = None
+        processing_person = validated_person
+        processing_garments = list(validated_garments)
+        try:
+            if self.settings.local_preprocessing_enabled:
+                try:
+                    preprocessing = await self.preprocess_inputs(
+                        validated_person,
+                        validated_garments[0],
+                        job_directory,
+                    )
+                    if not preprocessing.person.validation.accepted:
+                        return self._multi_rejected_result(
+                            job_id=job_id,
+                            job_directory=job_directory,
+                            person_image=validated_person,
+                            garment_image=validated_garments[0],
+                            preprocessing=preprocessing,
+                            reason=(
+                                "; ".join(
+                                    preprocessing.person.validation.rejection_reasons
+                                )
+                                or "Person image is unsuitable for virtual try-on."
+                            ),
+                            started_at=started_at,
+                        )
+                    if not preprocessing.garment.validation.accepted:
+                        return self._multi_rejected_result(
+                            job_id=job_id,
+                            job_directory=job_directory,
+                            person_image=validated_person,
+                            garment_image=validated_garments[0],
+                            preprocessing=preprocessing,
+                            reason=(
+                                "; ".join(
+                                    preprocessing.garment.validation.rejection_reasons
+                                )
+                                or "Garment image is unsuitable for virtual try-on."
+                            ),
+                            started_at=started_at,
+                        )
+                    processing_person = preprocessing.person.normalized_image_path
+                    processing_garments[0] = (
+                        preprocessing.garment.normalized_image_path
+                    )
+
+                    if self.local_preprocessor is None:  # pragma: no cover
+                        raise RuntimeError("Local preprocessor is unavailable.")
+                    for index, garment_path in enumerate(
+                        validated_garments[1:], start=2
+                    ):
+                        item_directory = job_directory / f"garment_{index:02d}"
+                        async with self._preprocessing_semaphore:
+                            processed = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.local_preprocessor.preprocess_garment,
+                                    garment_path,
+                                    item_directory,
+                                ),
+                                timeout=self.settings.preprocessing_timeout_seconds,
+                            )
+                        if not processed.validation.accepted:
+                            return self._multi_rejected_result(
+                                job_id=job_id,
+                                job_directory=job_directory,
+                                person_image=validated_person,
+                                garment_image=validated_garments[0],
+                                preprocessing=preprocessing,
+                                reason=(
+                                    "; ".join(processed.validation.rejection_reasons)
+                                    or f"Garment image {index} is unsuitable for virtual try-on."
+                                ),
+                                started_at=started_at,
+                            )
+                        processing_garments[index - 1] = (
+                            processed.normalized_image_path
+                        )
+                except (PreprocessingError, TimeoutError) as exc:
+                    if not self.settings.preprocessing_fail_open:
+                        raise
+                    LOGGER.warning(
+                        "multi_garment_preprocessing_fail_open",
+                        extra={
+                            "job_id": job_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+
+            provider_options: dict[str, Any] = {
+                "product_title": ", ".join(garment_types),
+                "preserve_original_color": True,
+                "preserve_face": options.preserve_face,
+                "preserve_pose": options.preserve_pose,
+                "preserve_background": options.preserve_background,
+            }
+            if preprocessing is not None and self.tryon_client.supports_text_prompt:
+                pose = preprocessing.person.pose
+                provider_options["pose_hint"] = (
+                    f"{pose.person_orientation}, arms {pose.arms_position}"
+                )
+
+            generation_started = time.perf_counter()
+            candidates = await self.tryon_service.generate_multi_candidates(
+                person_image=processing_person,
+                garment_images=processing_garments,
+                garment_types=garment_types,
+                category="complete_outfit",
+                color=ORIGINAL_GARMENT_COLOR,
+                output_directory=(
+                    job_directory / "candidates" / ORIGINAL_GARMENT_COLOR
+                ),
+                count=options.candidates_per_color,
+                options=provider_options,
+            )
+            log_stage_timing(
+                LOGGER,
+                pipeline="clothing",
+                stage="multi_garment_generation",
+                started=generation_started,
+                job_id=job_id,
+                garment_count=len(garment_images),
+                provider_calls=1,
+            )
+            best = candidates[0]
+            final_path = job_directory / "final" / "original.png"
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(best.path, final_path)
+            self.output_manager.write_candidate_metadata(job_directory, candidates)
+            result = TryOnJobResult(
+                job_id=job_id,
+                status="completed",
+                person_image=validated_person,
+                garment_image=validated_garments[0],
+                preprocessing=preprocessing,
+                results=[
+                    ColorResult(
+                        color=ORIGINAL_GARMENT_COLOR,
+                        output=final_path.relative_to(job_directory),
+                        score=1.0,
+                        accepted=True,
+                        retry_count=0,
+                        candidates_evaluated=len(candidates),
+                        problems=[],
+                    )
+                ],
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+            self.output_manager.write_result(job_directory, result)
+            LOGGER.info(
+                "multi_garment_job_completed",
+                extra={
+                    "job_id": job_id,
+                    "garment_count": len(garment_images),
+                    "provider_calls": 1,
+                },
+            )
+            return result
+        except Exception as exc:
+            failure = TryOnJobResult(
+                job_id=job_id,
+                status="failed",
+                person_image=validated_person,
+                garment_image=validated_garments[0],
+                preprocessing=preprocessing,
+                error=str(exc)[:1000],
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+            self.output_manager.write_result(job_directory, failure)
+            raise
+        finally:
+            if self.settings.delete_temp_files:
+                remove_tree(temp_directory, self.settings.temp_directory)
+
+    def _multi_rejected_result(
+        self,
+        *,
+        job_id: str,
+        job_directory: Path,
+        person_image: Path,
+        garment_image: Path,
+        preprocessing: PreprocessingResult,
+        reason: str,
+        started_at: datetime,
+    ) -> TryOnJobResult:
+        result = TryOnJobResult(
+            job_id=job_id,
+            status="rejected",
+            person_image=person_image,
+            garment_image=garment_image,
+            preprocessing=preprocessing,
+            rejection_reason=reason,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+        )
+        self.output_manager.write_result(job_directory, result)
+        return result
+
+    def _claim_job_directory(self, job_id: str) -> Path:
+        """Use an API-reserved job directory or create a pipeline-owned one."""
+
+        if re.fullmatch(r"job_\d{8}_[0-9a-f]{6}", job_id) is None:
+            raise InputValidationError("Invalid internal job identifier.")
+        job_directory = self.settings.output_directory / job_id
+        if job_directory.is_dir():
+            return job_directory
+        return self.output_manager.create_job_directory(job_id)
 
     async def _process_color(
         self,

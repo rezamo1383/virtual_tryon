@@ -18,6 +18,14 @@ class ErrorResponse(BaseModel):
     message: str
 
 
+class TryOnJobResponse(BaseModel):
+    """Minimal public acknowledgement for a completed Try-On request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+
+
 class ProductPreparationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

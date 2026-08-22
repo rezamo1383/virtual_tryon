@@ -90,11 +90,10 @@ def test_clothing_command_applies_repeated_garments(
     assert "Applied items: T-shirt -> Watch" in result.output
     assert "Stage jobs:" in result.output
     jobs = sorted(test_settings.output_directory.glob("job_*"))
-    assert len(jobs) == 2
-    requests = [
-        json.loads((job / "request.json").read_text(encoding="utf-8"))
-        for job in jobs
-    ]
-    requests_by_title = {item["product_title"]: item for item in requests}
-    assert requests_by_title["T-shirt"]["candidates_per_color"] == 1
-    assert requests_by_title["Watch"]["candidates_per_color"] == 2
+    assert len(jobs) == 1
+    request_data = json.loads(
+        (jobs[0] / "request.json").read_text(encoding="utf-8")
+    )
+    assert request_data["generation_strategy"] == "single_call_multi_reference"
+    assert request_data["garment_types"] == ["T-shirt", "Watch"]
+    assert request_data["candidates_per_color"] == 2

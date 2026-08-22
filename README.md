@@ -835,12 +835,35 @@ curl -X POST http://127.0.0.1:8000/api/v1/tryon \
   -F "candidates_per_color=2" -F "max_retries=1"
 ```
 
-در حالت چندلباسی، برای کاهش هزینه مراحل میانی با یک candidate و بدون retry اجرا
-می‌شوند و تنظیمات `candidates_per_color` و `max_retries` روی مرحلهٔ آخر اعمال
-می‌شوند. در این حالت فقط رنگ اصلی پشتیبانی می‌شود.
+در حالت چندلباسی، شخص و تمام تصاویر مرجع در یک درخواست generation ارسال می‌شوند؛
+مرحلهٔ میانی وجود ندارد. در این حالت فقط رنگ اصلی پشتیبانی می‌شود.
 
-نسخه فعلی job را synchronously اجرا می‌کند. ساخت Pipeline از transport مستقل است،
-بنابراین endpoint بعداً می‌تواند فقط Job را در Queue قرار دهد.
+### In-process background Try-On
+
+`POST /api/v1/tryon` validates and stores the multipart inputs, reserves the
+`job_id`, schedules an `asyncio` task inside the FastAPI process, and immediately
+returns HTTP `202 Accepted`:
+
+```json
+{
+  "job_id": "job_20260819_abcdef"
+}
+```
+
+Inputs remain under `TEMP_DIRECTORY/background_uploads/{job_id}/` until the task
+finishes. With `DELETE_TEMP_FILES=true`, that directory is removed only after
+success, failure, or cancellation. Durable lifecycle state is written to
+`outputs/{job_id}/job_state.json`; the existing pipeline continues to write its
+full request, artifacts, and `results.json` under `outputs/{job_id}/`.
+
+The lifecycle is `queued -> running -> completed` (or `failed`/`rejected`). The
+existing `GET /api/v1/jobs/{job_id}` and
+`GET /api/v1/results/{job_id}/image` endpoints read the same job storage. No
+polling client, SSE, WebSocket, Redis, Celery, or external worker is included.
+
+Important: tasks live only in the FastAPI process. An abrupt process or Docker
+restart can lose running jobs. This intentionally simple implementation does not
+provide crash recovery or cross-process task ownership.
 
 ## اتصال Qwen API
 

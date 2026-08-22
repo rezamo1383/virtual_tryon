@@ -29,6 +29,16 @@ face, identity, body, pose, hands, framing, light, and background. Match the tar
 design, logo, texture, material, cut, and proportions. No text, collage, extra people,
 or unrelated items."""
 
+MULTI_GARMENT_GENERATION_PROMPT = """Photorealistic complete-outfit try-on. Ref1 is
+the target person. The following references are product photos, in order: {references}.
+Transfer every listed garment/accessory to Ref1 in one coherent outfit. From each
+product reference transfer only its labeled item; ignore its person, pose, background,
+and all non-target items. Preserve every item's exact original colors, design, logos,
+texture, material, cut, and proportions. Preserve Ref1's face, identity, body, pose,
+hands, framing, lighting, background, and any clothing or accessories not replaced by
+the listed targets. Correct layering and natural fit are required. No text, collage,
+extra people, duplicated limbs, omitted target items, or unrelated items."""
+
 
 class ClothingPromptBuilder:
     """Build compact, stateless prompts for the clothing pipeline."""
@@ -85,4 +95,25 @@ class ClothingPromptBuilder:
         pose_hint = str(options.get("pose_hint", "")).strip()
         if pose_hint:
             prompt += f" Pose: {pose_hint}."
+        return prompt
+
+    def generation_multi(
+        self,
+        garment_types: list[str],
+        options: dict[str, Any],
+    ) -> str:
+        """Build a positional prompt for one person and many product images."""
+
+        references = "; ".join(
+            f"Ref{index + 2}={json.dumps(label, ensure_ascii=False)}"
+            for index, label in enumerate(garment_types)
+        )
+        prompt = MULTI_GARMENT_GENERATION_PROMPT.format(
+            references=references,
+        ).replace("\n", " ")
+        if options.get("strict_identity_preservation"):
+            prompt += " Strict retry: alter nothing outside the listed targets."
+        pose_hint = str(options.get("pose_hint", "")).strip()
+        if pose_hint:
+            prompt += f" Person pose: {pose_hint}."
         return prompt

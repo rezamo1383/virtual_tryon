@@ -179,6 +179,60 @@ async def test_gapgpt_image_edit_sends_two_images_and_downloads_url(
 
 
 @pytest.mark.asyncio
+async def test_gapgpt_multi_garment_uses_one_post_with_all_images(
+    tmp_path: Path,
+) -> None:
+    person = tmp_path / "person.png"
+    tshirt = tmp_path / "tshirt.png"
+    pants = tmp_path / "pants.png"
+    person.write_bytes(_png_bytes((100, 110, 120)))
+    tshirt.write_bytes(_png_bytes((180, 20, 20)))
+    pants.write_bytes(_png_bytes((20, 30, 180)))
+    generated = _png_bytes((1, 2, 3))
+    post_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        assert request.method == "POST"
+        assert request.url.path == "/v1/images/edits"
+        post_count += 1
+        body = request.content
+        assert body.count(b'name="image[]"') == 3
+        assert b'filename="person.png"' in body
+        assert b'filename="garment-01.png"' in body
+        assert b'filename="garment-02.png"' in body
+        assert b"Ref2=\"T-shirt\"" in body
+        assert b"Ref3=\"Pants\"" in body
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"b64_json": base64.b64encode(generated).decode("ascii")}
+                ]
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GapGPTTryOnClient(
+        base_url="https://api.gapgpt.app/v1",
+        api_key="gap-key",
+        model="gpt-image-1.5",
+        http_client=http_client,
+    )
+    outputs = await client.generate_multi(
+        person,
+        [tshirt, pants],
+        ["T-shirt", "Pants"],
+        "complete_outfit",
+        {"candidate_count": 1},
+    )
+
+    assert post_count == 1
+    assert len(outputs) == 1
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_gapgpt_image_edit_accepts_base64_response(tmp_path: Path) -> None:
     person = tmp_path / "person.png"
     garment = tmp_path / "garment.png"

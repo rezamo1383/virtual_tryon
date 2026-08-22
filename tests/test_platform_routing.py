@@ -422,7 +422,7 @@ async def test_generic_api_resolves_tenant_from_api_key(
 
 
 @pytest.mark.asyncio
-async def test_tryon_api_applies_each_labeled_garment_in_order(
+async def test_tryon_api_applies_all_labeled_garments_in_one_stage(
     tmp_path: Path,
     valid_images: tuple[Path, Path],
 ) -> None:
@@ -459,32 +459,49 @@ async def test_tryon_api_applies_each_labeled_garment_in_order(
                 "max_retries": "0",
             },
         )
-    await application.state.runtime.aclose()
-
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
-    assert data["applied_items"] == ["T-shirt", "Watch"]
-    assert len(data["stage_job_ids"]) == 2
-    assert data["job_id"] == data["stage_job_ids"][-1]
-    first_request = json.loads(
+    assert data == {"job_id": data["job_id"]}
+    await application.state.background_tryon_jobs.wait_all()
+    await application.state.runtime.aclose()
+    request_data = json.loads(
         (
             settings.output_directory
-            / data["stage_job_ids"][0]
+            / data["job_id"]
             / "request.json"
         ).read_text(encoding="utf-8")
     )
-    final_request = json.loads(
+    assert request_data["generation_strategy"] == "single_call_multi_reference"
+    assert request_data["garment_types"] == ["T-shirt", "Watch"]
+    assert len(request_data["garment_images"]) == 2
+    assert request_data["candidates_per_color"] == 2
+    stored_result = json.loads(
         (
             settings.output_directory
-            / data["stage_job_ids"][1]
-            / "request.json"
+            / data["job_id"]
+            / "results.json"
         ).read_text(encoding="utf-8")
     )
-    assert first_request["product_title"] == "T-shirt"
-    assert first_request["candidates_per_color"] == 1
-    assert final_request["product_title"] == "Watch"
-    assert final_request["candidates_per_color"] == 2
-    assert data["stage_job_ids"][0] in final_request["person_image"]
+    assert stored_result["job_id"] == data["job_id"]
+    assert stored_result["status"] == "completed"
+    assert (
+        stored_result["results"][0]["output"].replace("\\", "/")
+        == "final/original.png"
+    )
+
+
+def test_tryon_openapi_response_exposes_only_job_id(tmp_path: Path) -> None:
+    application = create_app(_platform_settings(tmp_path))
+    schema = application.openapi()
+    response_schema = schema["paths"]["/api/v1/tryon"]["post"]["responses"][
+        "202"
+    ]["content"]["application/json"]["schema"]
+    assert response_schema == {
+        "$ref": "#/components/schemas/TryOnJobResponse"
+    }
+    public_schema = schema["components"]["schemas"]["TryOnJobResponse"]
+    assert public_schema["required"] == ["job_id"]
+    assert set(public_schema["properties"]) == {"job_id"}
 
 
 @pytest.mark.asyncio

@@ -99,6 +99,7 @@ class GapGPTTryOnClient(TryOnAPIClient):
     """Send person and garment references to GapGPT's image-edit API."""
 
     supports_text_prompt = True
+    supports_multi_reference = True
     _PNG_CACHE_MAX_ENTRIES = 8
     _PNG_CACHE_MAX_BYTES = 64 * 1024 * 1024
 
@@ -216,6 +217,81 @@ class GapGPTTryOnClient(TryOnAPIClient):
                 f"GapGPT image request failed after retries: {detail}"
             ) from exc
         raise TryOnAPIError("GapGPT image request failed without a response.")
+
+    async def generate_multi(
+        self,
+        person_image: Path,
+        garment_images: list[Path],
+        garment_types: list[str],
+        category: str,
+        options: dict[str, Any],
+    ) -> list[bytes]:
+        """Send the person and all garment references in one HTTP request."""
+
+        if not garment_images or len(garment_images) != len(garment_types):
+            raise TryOnAPIError("Every garment reference requires one garment type.")
+        prompt_method = getattr(self._prompt_builder, "generation_multi", None)
+        if not callable(prompt_method):
+            raise TryOnAPIError(
+                "The configured prompt profile does not support multi-garment generation."
+            )
+        files = [
+            (
+                self._field_name,
+                ("person.png", self._privacy_safe_png(person_image), "image/png"),
+            ),
+            *[
+                (
+                    self._field_name,
+                    (
+                        f"garment-{index:02d}.png",
+                        self._privacy_safe_png(path),
+                        "image/png",
+                    ),
+                )
+                for index, path in enumerate(garment_images, start=1)
+            ],
+        ]
+        quality = str(options.get("generation_quality", self._quality))
+        if quality not in {"auto", "low", "medium", "high"}:
+            quality = self._quality
+        data = {
+            "model": self._model,
+            "prompt": prompt_method(garment_types, options),
+            "n": str(max(1, min(8, int(options.get("candidate_count", 1))))),
+            "quality": quality,
+            "output_format": "png",
+        }
+        size = self._resolved_size(person_image, category)
+        if size:
+            data["size"] = size
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential_jitter(initial=1, max=15),
+                retry=retry_if_exception_type(
+                    (
+                        _TransientGapGPTImageError,
+                        httpx.TimeoutException,
+                        httpx.NetworkError,
+                    )
+                ),
+                reraise=True,
+            ):
+                with attempt:
+                    return await self._post(files, data)
+        except TryOnAPIError:
+            raise
+        except Exception as exc:
+            detail = _network_error_detail(exc)
+            LOGGER.error(
+                "gapgpt_multi_image_network_failed",
+                extra={"error_type": type(exc).__name__, "error": detail},
+            )
+            raise TryOnAPIError(
+                f"GapGPT multi-image request failed after retries: {detail}"
+            ) from exc
+        raise TryOnAPIError("GapGPT multi-image request failed without a response.")
 
     def _resolved_size(self, source_image: Path, category: str) -> str:
         if category != "wallpaper":

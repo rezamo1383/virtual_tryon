@@ -75,3 +75,63 @@ class TryOnService:
                 },
             )
         return results
+
+    async def generate_multi_candidates(
+        self,
+        *,
+        person_image: Path,
+        garment_images: list[Path],
+        garment_types: list[str],
+        category: str,
+        color: str,
+        output_directory: Path,
+        count: int,
+        options: dict[str, Any],
+    ) -> list[CandidateResult]:
+        """Generate a complete outfit using exactly one provider request."""
+
+        if not self._client.supports_multi_reference:
+            raise TryOnAPIError(
+                "The configured generation provider cannot process multiple "
+                "garment references in one request."
+            )
+        output_directory.mkdir(parents=True, exist_ok=True)
+        generated = await self._client.generate_multi(
+            person_image,
+            garment_images,
+            garment_types,
+            category,
+            {
+                **options,
+                "candidate_count": count,
+                "requested_color": color,
+            },
+        )
+        if len(generated) < count:
+            raise TryOnAPIError(
+                f"Try-on provider returned {len(generated)} of {count} candidates "
+                "from the single multi-reference request."
+            )
+        results: list[CandidateResult] = []
+        for offset, image_bytes in enumerate(generated[:count]):
+            candidate_index = offset + 1
+            path = output_directory / f"candidate_{candidate_index:02d}.png"
+            path.write_bytes(image_bytes)
+            results.append(
+                CandidateResult(
+                    color=color,
+                    path=path,
+                    attempt=0,
+                    candidate_index=candidate_index,
+                )
+            )
+            LOGGER.info(
+                "multi_garment_candidate_saved",
+                extra={
+                    "color": color,
+                    "candidate_index": candidate_index,
+                    "garment_count": len(garment_images),
+                    "provider_calls": 1,
+                },
+            )
+        return results

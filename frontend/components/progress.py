@@ -10,7 +10,12 @@ from typing import Any
 import streamlit as st
 
 
-def run_with_progress(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+def run_with_progress(
+    operation: Callable[[], dict[str, Any]],
+    *,
+    completed_label: str = "Completed",
+    completed_text: str = "Completed · Result is ready",
+) -> dict[str, Any]:
     """Run one HTTP call while keeping meeting-friendly status feedback alive."""
 
     stages = (
@@ -37,6 +42,6 @@ def run_with_progress(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]
             status.update(label=name, state="running", expanded=True)
             time.sleep(0.35)
         result = future.result()
-    progress.progress(100, text="Completed · Result is ready")
-    status.update(label="Completed", state="complete", expanded=False)
+    progress.progress(100, text=completed_text)
+    status.update(label=completed_label, state="complete", expanded=False)
     return result

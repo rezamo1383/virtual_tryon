@@ -2,8 +2,9 @@
 
 A presentation-focused Streamlit client for the existing tenant-aware FastAPI
 backend. The frontend contains no prompt, model, preprocessing, or generation
-logic. Both products submit the same domain-neutral multipart request to
-`POST /api/v1/generate`; the tenant API key determines backend routing.
+logic. Wallpaper keeps the generic synchronous route. Clothing submits to the
+asynchronous Try-On route and follows the returned job through SSE. The tenant
+API key determines backend routing and is reused for status and result access.
 
 ## Features
 
@@ -16,6 +17,28 @@ logic. Both products submit the same domain-neutral multipart request to
 - Session-local recent job history and one-click reset
 - Sanitized client errors with no provider details or stack traces
 - Responsive premium card layout suitable for client meetings
+
+## Clothing request lifecycle
+
+One click creates exactly one backend generation job:
+
+```text
+POST /api/v1/tryon
+  -> HTTP 202 {"job_id":"job_xxx"}
+
+GET /api/v1/jobs/{job_id}/events
+  -> queued / running / completed
+
+GET /api/v1/results/{job_id}/image
+  -> final image bytes and MIME type
+```
+
+The Streamlit client uses `httpx.Client.stream()` for SSE. Status events update
+the existing progress UI, while `: keep-alive` comments are ignored. The stream
+is not replaced with job polling. A final image is requested exactly once after
+`completed` or `completed_with_failures`; failed and rejected jobs do not trigger
+an image request. The same clothing tenant API key is sent to all three
+endpoints. Wallpaper retains its existing synchronous generic flow.
 
 ## Install
 

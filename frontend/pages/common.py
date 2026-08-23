@@ -126,21 +126,46 @@ def execute_generation(
                 api_key=api_key,
             )
 
-        result = run_with_progress(operation)
-        if result.get("status") in {"failed", "rejected"}:
-            reason = result.get("rejection_reason") or result.get("error")
-            st.error(_safe_result_error(reason))
-            return None
-        job_id = str(result.get("job_id", ""))
-        output_path = client.output_path(result, product)
-        if not job_id or not output_path:
-            st.error("Generation finished without a downloadable result.")
-            return None
-        output_bytes, output_mime = client.artifact(
-            job_id,
-            output_path,
-            api_key=api_key,
-        )
+        if product == "clothing":
+            result = run_with_progress(
+                operation,
+                completed_label="Submitted",
+                completed_text="Submitted · Waiting for generation",
+            )
+            job_id = str(result.get("job_id", ""))
+            if not job_id:
+                raise BackendAPIError(
+                    "The backend did not return a valid generation job."
+                )
+            terminal_status = _wait_for_clothing_job(
+                client,
+                job_id,
+                api_key=api_key,
+            )
+            result = {**result, "status": terminal_status}
+            if terminal_status in {"failed", "rejected"}:
+                st.error(_safe_result_error(terminal_status))
+                return None
+            output_bytes, output_mime = client.result_image(
+                job_id,
+                api_key=api_key,
+            )
+        else:
+            result = run_with_progress(operation)
+            if result.get("status") in {"failed", "rejected"}:
+                reason = result.get("rejection_reason") or result.get("error")
+                st.error(_safe_result_error(reason))
+                return None
+            job_id = str(result.get("job_id", ""))
+            output_path = client.output_path(result, product)
+            if not job_id or not output_path:
+                st.error("Generation finished without a downloadable result.")
+                return None
+            output_bytes, output_mime = client.artifact(
+                job_id,
+                output_path,
+                api_key=api_key,
+            )
         record = {
             "job_id": job_id,
             "product": product,
@@ -167,6 +192,65 @@ def execute_generation(
         return None
     finally:
         st.session_state["generation_in_progress"] = False
+
+
+def _wait_for_clothing_job(
+    client: BackendClient,
+    job_id: str,
+    *,
+    api_key: str,
+) -> str:
+    status_box = st.status("Queued", expanded=True)
+    progress = st.progress(12, text="Waiting for generation to start")
+    try:
+        for event in client.job_events(job_id, api_key=api_key):
+            if event.get("job_id") != job_id:
+                raise BackendAPIError(
+                    "The backend returned an invalid job status event."
+                )
+            current = str(event.get("status", ""))
+            if current == "queued":
+                progress.progress(18, text="Queued · Waiting for a worker")
+                status_box.update(
+                    label="Queued",
+                    state="running",
+                    expanded=True,
+                )
+            elif current == "running":
+                progress.progress(
+                    72,
+                    text="Generating · Creating your final outfit",
+                )
+                status_box.update(
+                    label="Generating",
+                    state="running",
+                    expanded=True,
+                )
+            elif current in {"completed", "completed_with_failures"}:
+                progress.progress(100, text="Completed · Result is ready")
+                status_box.update(
+                    label="Completed",
+                    state="complete",
+                    expanded=False,
+                )
+                return current
+            elif current in {"failed", "rejected"}:
+                status_box.update(
+                    label=("Rejected" if current == "rejected" else "Failed"),
+                    state="error",
+                    expanded=True,
+                )
+                return current
+    except BackendAPIError:
+        status_box.update(
+            label="Connection interrupted",
+            state="error",
+            expanded=True,
+        )
+        raise
+    raise BackendAPIError(
+        "The job status stream ended before generation finished."
+    )
 
 
 def _safe_result_error(value: Any) -> str:

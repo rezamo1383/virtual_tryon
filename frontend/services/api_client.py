@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from collections.abc import Iterable, Iterator
 from typing import Any
 from urllib.parse import quote
 
@@ -160,6 +161,78 @@ class BackendClient:
             headers=self._headers(api_key),
         )
 
+    def job_events(
+        self,
+        job_id: str,
+        *,
+        api_key: str,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield status events from the tenant-owned SSE job stream."""
+
+        endpoint = f"/api/v1/jobs/{quote(job_id, safe='')}/events"
+        headers = {
+            **self._headers(api_key),
+            "Accept": "text/event-stream",
+        }
+        try:
+            with self._client.stream(
+                "GET",
+                endpoint,
+                headers=headers,
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise self._response_error(response)
+                content_type = response.headers.get("content-type", "")
+                if not content_type.casefold().startswith("text/event-stream"):
+                    raise BackendAPIError(
+                        "The backend returned an invalid job event stream."
+                    )
+                yield from _parse_status_events(response.iter_lines())
+        except BackendAPIError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise BackendAPIError(
+                "Waiting for image generation timed out. Please try again."
+            ) from exc
+        except httpx.ConnectError as exc:
+            raise BackendAPIError(
+                "The backend went offline while waiting for generation."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise BackendAPIError(
+                "The job status stream was interrupted. Please try again."
+            ) from exc
+
+    def result_image(
+        self,
+        job_id: str,
+        *,
+        api_key: str,
+    ) -> tuple[bytes, str]:
+        """Download the final image from the dedicated public result endpoint."""
+
+        endpoint = f"/api/v1/results/{quote(job_id, safe='')}/image"
+        try:
+            response = self._client.get(
+                endpoint,
+                headers=self._headers(api_key),
+            )
+        except httpx.TimeoutException as exc:
+            raise BackendAPIError(
+                "The result download timed out. Please try again."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise BackendAPIError(
+                "The result could not be downloaded from the backend."
+            ) from exc
+        if response.status_code >= 400:
+            raise self._response_error(response)
+        return (
+            response.content,
+            response.headers.get("content-type", "image/png").split(";")[0],
+        )
+
     def artifact(
         self,
         job_id: str,
@@ -279,3 +352,53 @@ class BackendClient:
 
 def _form_bool(value: Any) -> str:
     return "true" if bool(value) else "false"
+
+
+def _parse_status_events(lines: Iterable[str]) -> Iterator[dict[str, Any]]:
+    event_type = ""
+    data_lines: list[str] = []
+    for line in lines:
+        if line == "":
+            event = _decode_status_event(event_type, data_lines)
+            if event is not None:
+                yield event
+            event_type = ""
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, value = line.partition(":")
+        if not separator:
+            continue
+        value = value[1:] if value.startswith(" ") else value
+        if field == "event":
+            event_type = value
+        elif field == "data":
+            data_lines.append(value)
+
+    event = _decode_status_event(event_type, data_lines)
+    if event is not None:
+        yield event
+
+
+def _decode_status_event(
+    event_type: str,
+    data_lines: list[str],
+) -> dict[str, Any] | None:
+    if event_type != "status" or not data_lines:
+        return None
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except json.JSONDecodeError as exc:
+        raise BackendAPIError(
+            "The backend returned an invalid job status event."
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("job_id"), str)
+        or not isinstance(payload.get("status"), str)
+    ):
+        raise BackendAPIError(
+            "The backend returned an invalid job status event."
+        )
+    return payload
